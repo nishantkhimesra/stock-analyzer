@@ -353,7 +353,7 @@ def analyse_ticker(ticker: str) -> StockScore:
 
         # Valuation multiples
         result.pe_ratio     = info.get("trailingPE")
-        result.forward_pe   = info.get("forwardPE")
+        result.forward_pe   = info.get("forwardPE")  # Yahoo's GAAP-based estimate; may understate vs company non-GAAP guided EPS
         result.pb_ratio     = info.get("priceToBook")
         result.ps_ratio     = info.get("priceToSalesTrailingTwelveMonths")
         result.ev_ebitda    = info.get("enterpriseToEbitda")
@@ -438,11 +438,18 @@ def analyse_ticker(ticker: str) -> StockScore:
         # two stocks at composite 55 getting different labels from a 0.2% upside
         # difference). Piotroski ≥5 ensures financial health gates the top label.
         up = result.upside_to_target if result.upside_to_target is not None else 0.0
-        if result.composite_score >= 56 and up >= 30 and result.piotroski_score >= 5:
+        p  = result.piotroski_score
+        cs = result.composite_score
+        if cs >= 56 and up >= 30 and p >= 5:
             result.analyst_rating = "Strong Buy"
-        elif result.composite_score >= 35 and up >= 5:
+        elif cs < 43 or (p <= 4 and up < 20):
+            # Weak composite OR bearish Piotroski with limited analyst upside → Hold.
+            # Prevents low-quality stocks (e.g. NET 136x P/E, 4/9 Piotroski) from
+            # being labelled Buy simply because composite ≥ 35.
+            result.analyst_rating = "Hold"
+        elif cs >= 35 and up >= 5:
             result.analyst_rating = "Buy"
-        elif result.composite_score >= 20:
+        elif cs >= 20:
             result.analyst_rating = "Hold"
         else:
             result.analyst_rating = "Avoid"
