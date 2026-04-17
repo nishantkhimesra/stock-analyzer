@@ -53,6 +53,7 @@ def piotroski_badge(score: int) -> str:
 
 def rating_badge(rating: str) -> str:
     r = rating.lower()
+    if "contrarian" in r:   return "[bold bright_green]⬆ Strong Buy[/bold bright_green] [dim yellow](Contrarian)[/dim yellow]"
     if "strong buy" in r:   return "[bold bright_green]⬆ Strong Buy[/bold bright_green]"
     if "buy" in r:          return "[green]↑ Buy[/green]"
     if "hold" in r:         return "[yellow]→ Hold[/yellow]"
@@ -157,10 +158,12 @@ def top_picks_panel(results: list, n: int = 5):
 
     cards = []
     for r in top:
+        _rl = r.analyst_rating.lower()
         tier = (
-            "[bold bright_green]★ STRONG BUY[/bold bright_green]" if r.composite_score >= 65 else
-            "[bold green]▲ BUY[/bold green]"                        if r.composite_score >= 50 else
-            "[yellow]→ HOLD[/yellow]"                               if r.composite_score >= 35 else
+            "[bold bright_green]★ STRONG BUY[/bold bright_green] [dim yellow](Contrarian)[/dim yellow]" if "contrarian" in _rl else
+            "[bold bright_green]★ STRONG BUY[/bold bright_green]" if "strong buy" in _rl else
+            "[bold green]▲ BUY[/bold green]"                       if "buy" in _rl else
+            "[yellow]→ HOLD[/yellow]"                              if "hold" in _rl else
             "[red]✗ AVOID[/red]"
         )
 
@@ -229,7 +232,7 @@ def summary_stats(results: list, sector_name: str):
     if not valid: return
 
     def _rating(r): return r.analyst_rating.lower()
-    strong_buys = sum(1 for r in valid if "strong buy" in _rating(r))
+    strong_buys = sum(1 for r in valid if "strong buy" in _rating(r) or "contrarian" in _rating(r))
     buys        = sum(1 for r in valid if "buy" in _rating(r) and "strong" not in _rating(r))
     holds       = sum(1 for r in valid if "hold" in _rating(r))
     avoids      = sum(1 for r in valid if "sell" in _rating(r) or "underperform" in _rating(r) or "avoid" in _rating(r))

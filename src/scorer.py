@@ -76,6 +76,7 @@ class StockScore:
     analyst_target: Optional[float] = None
     upside_to_target: Optional[float] = None
     analyst_rating: str = ""
+    yahoo_consensus: str = ""  # raw Yahoo recommendationKey, preserved for divergence check
 
     # Flags
     error: Optional[str] = None
@@ -384,7 +385,8 @@ def analyse_ticker(ticker: str) -> StockScore:
         result.analyst_target = info.get("targetMeanPrice")
         if result.analyst_target and price and price > 0:
             result.upside_to_target = ((result.analyst_target - price) / price) * 100
-        result.analyst_rating = info.get("recommendationKey", "").replace("_", " ").title()
+        result.yahoo_consensus = info.get("recommendationKey", "").replace("_", " ").title()
+        result.analyst_rating  = result.yahoo_consensus
 
         # Historical price data for momentum & MAs
         hist = _yf_fetch(lambda: stock.history(period="1y", interval="1d"))
@@ -431,11 +433,12 @@ def analyse_ticker(ticker: str) -> StockScore:
         # Compute composite scores
         result = compute_scores(result)
 
-        # Derive final rating from composite score + analyst upside.
-        # Strong Buy requires both a strong composite AND meaningful analyst upside
-        # to prevent high-upside/weak-fundamental stocks getting the top label.
+        # Derive final rating from composite score + analyst upside + Piotroski.
+        # Raised composite floor to 56 to prevent razor-thin boundary flips (e.g.
+        # two stocks at composite 55 getting different labels from a 0.2% upside
+        # difference). Piotroski ≥5 ensures financial health gates the top label.
         up = result.upside_to_target if result.upside_to_target is not None else 0.0
-        if result.composite_score >= 55 and up >= 30:
+        if result.composite_score >= 56 and up >= 30 and result.piotroski_score >= 5:
             result.analyst_rating = "Strong Buy"
         elif result.composite_score >= 35 and up >= 5:
             result.analyst_rating = "Buy"
@@ -443,6 +446,14 @@ def analyse_ticker(ticker: str) -> StockScore:
             result.analyst_rating = "Hold"
         else:
             result.analyst_rating = "Avoid"
+
+        # Contrarian flag: algo says Strong Buy but Street consensus is Hold/Neutral.
+        # Surfaces the divergence so users know they'd be swimming against the Street.
+        street = result.yahoo_consensus.lower()
+        if result.analyst_rating == "Strong Buy" and any(
+            x in street for x in ("hold", "neutral", "underperform", "sell")
+        ):
+            result.analyst_rating = "Contrarian Strong Buy"
 
     except Exception as e:
         result.error = str(e)
