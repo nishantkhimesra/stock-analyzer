@@ -431,6 +431,19 @@ def analyse_ticker(ticker: str) -> StockScore:
         # Compute composite scores
         result = compute_scores(result)
 
+        # Derive final rating from composite score + analyst upside.
+        # Strong Buy requires both a strong composite AND meaningful analyst upside
+        # to prevent high-upside/weak-fundamental stocks getting the top label.
+        up = result.upside_to_target if result.upside_to_target is not None else 0.0
+        if result.composite_score >= 55 and up >= 30:
+            result.analyst_rating = "Strong Buy"
+        elif result.composite_score >= 35 and up >= 5:
+            result.analyst_rating = "Buy"
+        elif result.composite_score >= 20:
+            result.analyst_rating = "Hold"
+        else:
+            result.analyst_rating = "Avoid"
+
     except Exception as e:
         result.error = str(e)
         result.data_quality = "failed"

@@ -58,6 +58,7 @@ def rating_badge(rating: str) -> str:
     if "hold" in r:         return "[yellow]→ Hold[/yellow]"
     if "underperform" in r: return "[orange1]↓ Underperform[/orange1]"
     if "sell" in r:         return "[red]⬇ Sell[/red]"
+    if "avoid" in r:        return "[red]✗ Avoid[/red]"
     return f"[dim]{rating or 'N/A'}[/dim]"
 
 
@@ -231,7 +232,7 @@ def summary_stats(results: list, sector_name: str):
     strong_buys = sum(1 for r in valid if "strong buy" in _rating(r))
     buys        = sum(1 for r in valid if "buy" in _rating(r) and "strong" not in _rating(r))
     holds       = sum(1 for r in valid if "hold" in _rating(r))
-    avoids      = sum(1 for r in valid if "sell" in _rating(r) or "underperform" in _rating(r))
+    avoids      = sum(1 for r in valid if "sell" in _rating(r) or "underperform" in _rating(r) or "avoid" in _rating(r))
     avg_score   = sum(r.composite_score for r in valid) / len(valid)
 
     avg_upside  = [r.upside_to_target for r in valid if r.upside_to_target is not None]
