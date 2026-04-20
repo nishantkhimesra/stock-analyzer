@@ -456,11 +456,16 @@ if val_btn and EVAL_AVAILABLE:
             st.session_state["validation"]        = _val
             st.session_state["validation_sector"] = sector_key
         except Exception as _e:
-            st.error(f"Validation failed: {_e}")
+            st.session_state["validation_error"] = str(_e)
+    st.rerun()  # Force clean render — prevents ghost duplicate of this section
+
+if "validation_error" in st.session_state:
+    st.error(f"Validation failed: {st.session_state.pop('validation_error')}")
 
 if (
     "validation" in st.session_state
     and st.session_state.get("validation_sector") == sector_key
+    and not val_btn
 ):
     _val = st.session_state["validation"]
     stock_vals = {v["ticker"]: v for v in _val.get("stock_validations", [])}
