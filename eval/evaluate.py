@@ -138,6 +138,17 @@ leverage/liquidity (F5–F7), operating efficiency (F8–F9).
   [5] IF cs >= 20  →  "Hold"
   [6] (default)   →  "Avoid"
 
+  [7] POST-PROCESSING — Contrarian label (applied AFTER [1]–[6]):
+      IF outcome of [1]–[6] is "Strong Buy" AND yahoo_consensus contains
+      "hold", "neutral", "underperform", or "sell"  →  "Contrarian Strong Buy"
+
+      "Contrarian Strong Buy" IS a Strong Buy confirmed by the algo’s gates.
+      The label means the Street disagrees — it does NOT mean the rating is
+      wrong. Validate it the same way as Strong Buy: check which of Path A/B/C
+      fired, confirm the values pass, then agree. Do NOT suggest downgrading a
+      Contrarian Strong Buy simply because yahoo_consensus is hold/neutral —
+      that divergence is exactly what the label is designed to surface.
+
 **Operator semantics — ALL comparisons are INCLUSIVE on the boundary:**
   ">= 5"  means 5 OR HIGHER  — piotroski of exactly 5 PASSES the >= 5 test
   "<= 4"  means 4 OR LOWER   — piotroski of exactly 4 TRIGGERS the Hold floor
@@ -210,20 +221,25 @@ Below are the screening results.
   - `"notes": "data_quality=<value> — scores not reliable; rating withheld"`
   Do NOT attempt to validate or disagree with a rating derived from partial/failed data.
 
-**Step 1 — Upside check (read the number, do not infer direction from narrative)**
-- `analyst_upside` is the % gap between current price and mean analyst price target.
-- If `analyst_upside` is negative or null, the stock trades AT or ABOVE its target.
-  A negative-upside stock CANNOT be a top conviction pick or a Strong Buy.
-  Treat negative upside as a bearish signal regardless of revenue growth or story.
+**Step 1 — Upside sign parsing (CRITICAL — preserve the minus sign)**
+- `analyst_upside` values can be NEGATIVE, e.g. "-35.1%".
+- "-35.1%" → up = −35.1. This is negative. It is NOT 35.1.
+  Path B requires up >= 30.0. Is −35.1 >= 30.0? NO. Path B cannot fire.
+- Path A (cs >= 65 AND p >= 7) ignores upside entirely and can still fire.
+  A stock with negative upside where Path A fires → "Strong Buy" (or
+  "Contrarian Strong Buy" since the Street is clearly not aligned).
+- Null/missing upside: treat as 0 for gate comparisons. Path B and [4] will not
+  fire (0 < 30 and 0 < 5). Path A can still fire if cs >= 65 AND p >= 7.
 
 **Step 2 — Arithmetic verification (MANDATORY before every gate comparison)**
 
 For every numeric gate check, write out the comparison explicitly:
-  - Gate: up >= 5.0. JSON value: "8.4%" → up = 8.4. Is 8.4 >= 5.0? YES. Gate passes.
-  - Gate: up >= 5.0. JSON value: "21.1%" → up = 21.1. Is 21.1 >= 5.0? YES. Gate passes.
-  - Gate: up >= 30.0. JSON value: "35.6%" → up = 35.6. Is 35.6 >= 30.0? YES. Path B passes.
+  - Gate: up >= 5.0. JSON: "8.4%" → up=8.4. Is 8.4 >= 5.0? YES.
+  - Gate: up >= 5.0. JSON: "21.1%" → up=21.1. Is 21.1 >= 5.0? YES.
+  - Gate: up >= 30.0. JSON: "35.6%" → up=35.6. Is 35.6 >= 30.0? YES.
+  - Gate: up >= 30.0. JSON: "-35.1%" → up=−35.1. Is −35.1 >= 30.0? NO. Path B fails.
 NEVER assert a comparison fails without showing the numbers. If you write
-"X < Y" you must verify X and Y are the actual JSON values for that ticker.
+"X < Y" you must first confirm X is the actual JSON value for that ticker.
 
 **Step 3 — Walk the decision tree (do NOT check gates independently)**
 
@@ -233,20 +249,24 @@ Then evaluate [1]→[3]→[4]→[5]→[6] in order, stopping at first match.
 
 Critical errors to avoid:
 - Path A requires NO upside check. Flagging low upside on a Path-A stock is WRONG.
+- Negative upside does NOT block Path A. Only Path B/C require upside > 0.
 - Do NOT jump from "fails Strong Buy" to Avoid without checking Buy/Hold first.
 - piotroski of exactly 5 PASSES >= 5. Never write "5 is below the required 5".
-- A stock with cs >= 35 AND up >= 5% is Buy at [4] regardless of sector/narrative.
+- Buy gate [4] is cs >= 35 AND up >= 5.0. Cite this, not "cs >= 20" (that is Hold [5]).
+  Correct: "cs=52 >= 35 AND up=21.1 >= 5.0 → Buy [4]."  Wrong: "cs >= 20 → Buy."
 - p <= 4 triggers Hold [3] regardless of upside. That is correct, not a bug.
+- "Contrarian Strong Buy" is a valid rating — agree with it when Path A/B/C fires.
+  Do NOT suggest downgrading it. The Street divergence is informational only.
 
 If the walk outcome matches rating_given → agree.
 If it differs → disagree, cite the step and show the values:
   e.g. "Path A fires: cs=71 >= 65 AND p=9 >= 7 → Strong Buy. Upside irrelevant."
 
-**Step 3 — Distress flags (independent of rating agreement)**
+**Step 4 — Distress flags (independent of rating agreement)**
 - piotroski ≤ 2 on any Buy or Strong Buy → add concern, keep agreement if gates pass.
 - piotroski_context = "hyper_growth" overrides low-p flags for fast-growth stocks.
 
-**Step 4 — Internal consistency**
+**Step 5 — Internal consistency**
 - Check that `revenue_growth`, `fwd_pe`, `rsi_14`, and `analyst_upside` are mutually
   consistent with the rating. A stock with fwd_pe > 60 AND negative upside AND
   piotroski ≤ 3 should not be Buy or Strong Buy regardless of revenue growth.
