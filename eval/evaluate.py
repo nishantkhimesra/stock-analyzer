@@ -41,7 +41,7 @@ load_dotenv()
 console = Console()
 
 DEFAULT_MODEL   = "gpt-4o-mini"          # opinion mode — fast & cheap
-GROUNDED_MODEL  = "gpt-4o-mini-search-preview"  # grounded mode — web search enabled
+GROUNDED_MODEL  = "gpt-4o-search-preview"  # grounded mode — web search enabled via Responses API
 MAX_WORKERS     = 3
 
 SCORING_CONTEXT = """
@@ -282,11 +282,21 @@ def call_openai_grounded(results: list[StockScore], top_n: int = 8) -> dict:
         f"to fact-check top {len(valid)} stocks…[/dim]"
     )
 
-    response = client.responses.create(
-        model=GROUNDED_MODEL,
-        tools=[{"type": "web_search_preview"}],
-        input=prompt,
-    )
+    try:
+        response = client.responses.create(
+            model=GROUNDED_MODEL,
+            tools=[{"type": "web_search_preview"}],
+            input=prompt,
+        )
+    except Exception as e:
+        if "404" in str(e) or "not found" in str(e).lower():
+            console.print(
+                f"[red]Error:[/red] Model '{GROUNDED_MODEL}' not available on your API tier.\n"
+                "OpenAI web search requires a Tier 1+ account (first billing payment made).\n"
+                "Check access at: https://platform.openai.com/docs/models/gpt-4o-search-preview"
+            )
+            sys.exit(1)
+        raise
 
     raw = response.output_text.strip()
     if raw.startswith("```"):
