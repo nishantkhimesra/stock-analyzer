@@ -119,14 +119,18 @@ leverage/liquidity (F5–F7), operating efficiency (F8–F9).
 
       Path A (quality bypass):  cs >= 65  AND  p >= 7
       ┌──────────────────────────────────────────────────────────────────────┐
-      │ UPSIDE IS NOT CHECKED ON PATH A. analyst_upside is IRRELEVANT here.    │
-      │ cs=71, p=9, upside=16.8%  →  Path A fires  →  Strong Buy. CORRECT.     │
-      │ cs=65, p=9, upside=5%     →  Path A fires  →  Strong Buy. CORRECT.     │
-      │ Do NOT flag low upside as a problem for stocks on Path A.              │
+      │ Path A threshold: cs >= 65 (sixty-five). NOT 56. NOT 60.               │
+      │ cs=60.8 FAILS Path A (60.8 < 65). cs=65.0 PASSES. cs=71 PASSES.       │
+      │ UPSIDE IS NOT CHECKED ON PATH A. analyst_upside is IRRELEVANT here.   │
+      │ cs=71, p=9, upside=16.8%  →  Path A fires  →  Strong Buy. CORRECT.    │
+      │ Do NOT flag low upside as a problem for stocks on Path A.             │
       └──────────────────────────────────────────────────────────────────────┘
 
-      Path B (standard):         cs >= 56  AND  up >= 30.0  AND  p >= 5
-      Path C (FCF bypass):       fcf > 8.0  AND  p >= 5  AND  cs >= 52
+      Path B (standard):  cs >= 56  AND  up >= 30.0  AND  p >= 5
+      └─ Path B threshold: cs >= 56 (fifty-six). Different from Path A's 65.
+         cs=60.8 PASSES Path B if also up>=30 AND p>=5.
+
+      Path C (FCF bypass):  fcf > 8.0  AND  p >= 5  AND  cs >= 52
 
   [3] IF cs < 43  OR  p <= 4  →  "Hold"   (absolute floor)
       NOTE: p <= 4 triggers Hold regardless of analyst_upside.
@@ -142,12 +146,18 @@ leverage/liquidity (F5–F7), operating efficiency (F8–F9).
       IF outcome of [1]–[6] is "Strong Buy" AND yahoo_consensus contains
       "hold", "neutral", "underperform", or "sell"  →  "Contrarian Strong Buy"
 
-      "Contrarian Strong Buy" IS a Strong Buy confirmed by the algo’s gates.
-      The label means the Street disagrees — it does NOT mean the rating is
-      wrong. Validate it the same way as Strong Buy: check which of Path A/B/C
-      fired, confirm the values pass, then agree. Do NOT suggest downgrading a
-      Contrarian Strong Buy simply because yahoo_consensus is hold/neutral —
-      that divergence is exactly what the label is designed to surface.
+      LABEL MATCHING RULE — this is critical for agreement accuracy:
+      - If rating_given = "Contrarian Strong Buy" AND Path A/B/C fires:
+          rating_suggested = "Contrarian Strong Buy"   ← NOT "Strong Buy"
+          agreement        = "agree"
+          notes must explain: which path fired + why the Contrarian label
+          applies (Street consensus is hold/neutral despite strong gates).
+      - If rating_given = "Contrarian Strong Buy" but NO path fires:
+          rating_suggested = "Hold" or "Buy" (whichever the tree gives)
+          agreement        = "disagree"
+      - "Contrarian Strong Buy" ≠ "Strong Buy" for label-matching purposes.
+        outputting rating_suggested="Strong Buy" when algo says
+        "Contrarian Strong Buy" is a label mismatch — do NOT do this.
 
 **Operator semantics — ALL comparisons are INCLUSIVE on the boundary:**
   ">= 5"  means 5 OR HIGHER  — piotroski of exactly 5 PASSES the >= 5 test
@@ -209,17 +219,18 @@ Below are the screening results.
 ## Validation Rules — follow these IN ORDER for every stock
 
 **Step 0 — Data quality gate (check this FIRST, before any numeric reasoning)**
-- Each stock has a `data_quality` field: `"full"`, `"partial"`, or `"failed"`.
-- `"partial"` means the price was available but several key metrics were missing
-  (e.g. no P/E, no revenue growth). Composite scores built on partial data are
-  unreliable — missing valuation inputs default to 0, deflating the score.
-- `"failed"` means no price was available at all. All scores are zero artefacts.
-- For any stock where `data_quality != "full"`, you MUST output:
+- Read the EXACT `data_quality` value from the JSON for this ticker.
+- If data_quality = `"full"` → SKIP THIS STEP. Proceed directly to Step 1.
+  Do NOT withhold or flag stocks whose data_quality is full.
+- If data_quality = `"partial"`: price available but key metrics missing
+  (e.g. no P/E, no revenue growth). Scores are deflated and unreliable.
+- If data_quality = `"failed"`: no price at all. All scores are zero artefacts.
+- For any stock where data_quality is `"partial"` OR `"failed"`, output:
   - `"rating_suggested": "Insufficient data"`
   - `"agreement": "partial"`
   - `"confidence": "low"`
   - `"notes": "data_quality=<value> — scores not reliable; rating withheld"`
-  Do NOT attempt to validate or disagree with a rating derived from partial/failed data.
+  Do NOT attempt to validate a rating derived from partial/failed data.
 
 **Step 1 — Upside sign parsing (CRITICAL — preserve the minus sign)**
 - `analyst_upside` values can be NEGATIVE, e.g. "-35.1%".
@@ -252,13 +263,20 @@ Critical errors to avoid:
 - Negative upside does NOT block Path A. Only Path B/C require upside > 0.
 - Do NOT jump from "fails Strong Buy" to Avoid without checking Buy/Hold first.
 - piotroski of exactly 5 PASSES >= 5. Never write "5 is below the required 5".
-- Buy gate [4] is cs >= 35 AND up >= 5.0. Cite this, not "cs >= 20" (that is Hold [5]).
+- Buy gate [4] is cs >= 35 AND up >= 5.0. Piotroski is NOT checked at gate [4].
+  p=5, p=6, p=7 do NOT block Buy. Only gate [3] uses Piotroski (p <= 4 → Hold).
   Correct: "cs=52 >= 35 AND up=21.1 >= 5.0 → Buy [4]."  Wrong: "cs >= 20 → Buy."
+  Wrong:   "p=5 is low, suggesting Hold" — p=5 does NOT trigger Hold or block Buy.
 - p <= 4 triggers Hold [3] regardless of upside. That is correct, not a bug.
 - "Contrarian Strong Buy" is a valid rating — agree with it when Path A/B/C fires.
   Do NOT suggest downgrading it. The Street divergence is informational only.
 
-If the walk outcome matches rating_given → agree.
+When a stock lands on Hold [5] (cs >= 20, defaulting to Hold), the notes MUST
+explain WHY [4] didn’t fire: state the Buy gate check and show it failed.
+  Correct: "Buy [4] fails: up=−4.3 < 5.0 (negative upside). Hold [5] fires."
+  Wrong:   "cs >= 20 → Hold" with no explanation of why Buy was skipped.
+
+If the walk outcome matches rating_given → agree (use the EXACT rating_given label).
 If it differs → disagree, cite the step and show the values:
   e.g. "Path A fires: cs=71 >= 65 AND p=9 >= 7 → Strong Buy. Upside irrelevant."
 
@@ -266,13 +284,13 @@ If it differs → disagree, cite the step and show the values:
 - piotroski ≤ 2 on any Buy or Strong Buy → add concern, keep agreement if gates pass.
 - piotroski_context = "hyper_growth" overrides low-p flags for fast-growth stocks.
 
-**Step 5 — Internal consistency**
+**Step 6 — Internal consistency**
 - Check that `revenue_growth`, `fwd_pe`, `rsi_14`, and `analyst_upside` are mutually
   consistent with the rating. A stock with fwd_pe > 60 AND negative upside AND
   piotroski ≤ 3 should not be Buy or Strong Buy regardless of revenue growth.
 - Do NOT infer rating from company name, sector narrative, or revenue growth alone.
 
-**Step 5 — Flag stale or suspicious data**
+**Step 7 — Flag stale or suspicious data**
 - Flag any `fwd_pe` that looks implausibly low for a loss-making company (post-bankruptcy
   accounting can produce artificially positive forward EPS estimates).
 - Flag any `analyst_upside` > 150% on a stock with piotroski ≤ 3 as possibly stale data.
