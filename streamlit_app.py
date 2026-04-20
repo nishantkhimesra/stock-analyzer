@@ -1,5 +1,6 @@
 import sys
 import os
+import datetime
 import streamlit as st
 import pandas as pd
 
@@ -51,40 +52,6 @@ st.caption(
 st.divider()
 
 
-# ── Sidebar ───────────────────────────────────────────────────────────────────
-with st.sidebar:
-    st.header("⚙️ Settings")
-
-    sector_key = st.selectbox(
-        "Select Sector",
-        options=list(SECTOR_DISPLAY.keys()),
-        format_func=lambda k: SECTOR_DISPLAY[k],
-        index=list(SECTOR_DISPLAY.keys()).index("tech"),
-    )
-    display_name = SECTOR_DISPLAY[sector_key]
-    tickers = SECTOR_TICKERS[sector_key]
-    st.caption(f"🔎 {len(tickers)} stocks in this sector")
-
-    top_n = st.slider("Deep-dive picks to show", min_value=3, max_value=10, value=5)
-
-    st.divider()
-    run_btn = st.button("🔍 Analyse Sector", type="primary", use_container_width=True)
-
-    st.divider()
-    st.info(
-        f"⏱ Approx. **{len(tickers) * 1.2:.0f}–{len(tickers) * 2:.0f}s** "
-        "per sector scan (1 request/s rate limit)."
-    )
-
-    st.markdown("---")
-    st.markdown(
-        "**Scoring weights**\n"
-        "- Valuation 35 %\n"
-        "- Growth 40 %\n"
-        "- Momentum 25 %"
-    )
-
-
 # ── Helpers ───────────────────────────────────────────────────────────────────
 def rating_label(rating: str) -> str:
     rl = rating.lower()
@@ -119,6 +86,154 @@ def ma_status(r):
     if r.above_50dma or r.above_200dma:
         return "⚠️ Mixed signals"
     return "❌ Below both MAs"
+
+
+def generate_report(sector_key: str, results: list, validation: dict | None) -> str:
+    """Build a complete markdown report for download."""
+    display    = SECTOR_DISPLAY[sector_key]
+    now        = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
+    valid_res  = [r for r in results if r.data_quality != "failed"]
+    failed_res = [r for r in results if r.data_quality == "failed"]
+
+    lines = [
+        f"# 📈 Stock Analysis Report — {display}",
+        f"Generated: {now}  |  Not financial advice. Data via Yahoo Finance.",
+        "", "---", "", "## Summary",
+    ]
+
+    avg_cs = sum(r.composite_score for r in valid_res) / len(valid_res) if valid_res else 0
+    ups    = [r.upside_to_target for r in valid_res if r.upside_to_target]
+    avg_up = sum(ups) / len(ups) if ups else 0
+    def _rl(r): return r.analyst_rating.lower()
+    sb = sum(1 for r in valid_res if "strong buy" in _rl(r) or "contrarian" in _rl(r))
+    b  = sum(1 for r in valid_res if "buy" in _rl(r)
+             and "strong" not in _rl(r) and "contrarian" not in _rl(r))
+    h  = sum(1 for r in valid_res if "hold" in _rl(r))
+    av = sum(1 for r in valid_res if "avoid" in _rl(r) or "sell" in _rl(r))
+
+    lines += [
+        f"- **Stocks analysed:** {len(valid_res)}",
+        f"- **Avg composite score:** {avg_cs:.1f}/100",
+        f"- **Avg analyst upside:** {avg_up:.1f}%",
+        f"- **Rating distribution:** {sb} Strong Buy · {b} Buy · {h} Hold · {av} Avoid",
+        "", "---", "", "## Full Results", "",
+        "| Rank | Ticker | Company | Price | Composite | Val | Growth"
+        " | Mom | Piotroski | Fwd P/E | Rev Growth | Upside % | Rating |",
+        "|------|--------|---------|-------|-----------|-----|-------"
+        "|-----|-----------|---------|-----------|----------|--------|",
+    ]
+
+    for i, r in enumerate(valid_res, 1):
+        price  = f"${r.current_price:.2f}"           if r.current_price       else "N/A"
+        fpe    = f"{r.forward_pe:.1f}x"              if r.forward_pe          else "N/A"
+        revg   = f"{r.revenue_growth_yoy*100:.1f}%"  if r.revenue_growth_yoy  else "N/A"
+        upside = f"{r.upside_to_target:.1f}%"        if r.upside_to_target    else "N/A"
+        lines.append(
+            f"| {i} | {r.ticker} | {r.company_name[:28]} | {price}"
+            f" | {r.composite_score:.0f} | {r.valuation_score:.0f}"
+            f" | {r.growth_score:.0f} | {r.momentum_score:.0f}"
+            f" | {r.piotroski_score}/9 | {fpe} | {revg} | {upside}"
+            f" | {r.analyst_rating} |"
+        )
+
+    if failed_res:
+        lines += ["",
+                  f"*Data fetch failed for: {', '.join(r.ticker for r in failed_res)}*"]
+
+    if validation:
+        stock_vals = {v["ticker"]: v for v in validation.get("stock_validations", [])}
+        ov         = validation.get("overall_assessment", {})
+        lines += [
+            "", "---", "", "## 🤖 AI Validation", "",
+            "| Ticker | Algo Rating | AI Says | Agreement | Confidence | Notes |",
+            "|--------|-------------|---------|-----------|------------|-------|",
+        ]
+        for r in valid_res:
+            v        = stock_vals.get(r.ticker, {})
+            agree    = v.get("agreement", "—")
+            conf     = v.get("confidence", "—")
+            notes    = v.get("notes", "")
+            concerns = v.get("concerns", [])
+            if concerns:
+                notes += " ⚠ " + " · ".join(concerns)
+            lines.append(
+                f"| {r.ticker} | {r.analyst_rating}"
+                f" | {v.get('rating_suggested', '—')}"
+                f" | {agree} | {conf} | {notes} |"
+            )
+        lines += ["", "### Overall Assessment", ""]
+        if ov.get("sector_summary"):
+            lines += [ov["sector_summary"], ""]
+        if ov.get("top_conviction_picks"):
+            lines.append("**Top Conviction Picks:** "
+                         + ", ".join(ov["top_conviction_picks"]))
+        if ov.get("most_contested_ratings"):
+            lines.append("**Most Contested:** "
+                         + ", ".join(ov["most_contested_ratings"]))
+        if ov.get("systemic_issues"):
+            lines += ["", "**Systemic Issues**"]
+            lines += [f"- {s}" for s in ov["systemic_issues"]]
+        if ov.get("data_quality_flags"):
+            lines += ["", "**Data Quality Flags:** "
+                      + ", ".join(ov["data_quality_flags"])]
+    else:
+        lines += ["", "---", "",
+                  "*AI Validation not run. Click ▶ Run Validation in the app.*"]
+
+    lines += ["", "---", "*Generated by Stock Growth Potential Analyser*"]
+    return "\n".join(lines)
+
+
+# ── Sidebar ───────────────────────────────────────────────────────────────
+with st.sidebar:
+    st.header("⚙️ Settings")
+
+    sector_key = st.selectbox(
+        "Select Sector",
+        options=list(SECTOR_DISPLAY.keys()),
+        format_func=lambda k: SECTOR_DISPLAY[k],
+        index=list(SECTOR_DISPLAY.keys()).index("tech"),
+    )
+    display_name = SECTOR_DISPLAY[sector_key]
+    tickers = SECTOR_TICKERS[sector_key]
+    st.caption(f"🔎 {len(tickers)} stocks in this sector")
+
+    top_n = st.slider("Deep-dive picks to show", min_value=3, max_value=10, value=5)
+
+    st.divider()
+    run_btn = st.button("🔍 Analyse Sector", type="primary", use_container_width=True)
+
+    st.divider()
+    st.info(
+        f"⏱ Approx. **{len(tickers) * 1.2:.0f}–{len(tickers) * 2:.0f}s** "
+        "per sector scan (1 request/s rate limit)."
+    )
+
+    st.markdown("---")
+    st.markdown(
+        "**Scoring weights**\n"
+        "- Valuation 35 %\n"
+        "- Growth 40 %\n"
+        "- Momentum 25 %"
+    )
+
+    if "results" in st.session_state and st.session_state.get("scan_sector") == sector_key:
+        st.divider()
+        _rpt = generate_report(
+            sector_key,
+            st.session_state["results"],
+            st.session_state.get("validation")
+            if st.session_state.get("validation_sector") == sector_key
+            else None,
+        )
+        _fname = f"{sector_key}_analysis_{datetime.datetime.now().strftime('%Y%m%d_%H%M')}.md"
+        st.download_button(
+            "⬇️ Download Report",
+            data=_rpt,
+            file_name=_fname,
+            mime="text/markdown",
+            use_container_width=True,
+        )
 
 
 # ── Landing state ─────────────────────────────────────────────────────────────
@@ -414,3 +529,34 @@ if (
     ]
     if disagreements:
         st.warning(f"AI disagrees on: {', '.join(disagreements)}")
+
+# ── Download report ───────────────────────────────────────────────────────────
+if "results" in st.session_state and st.session_state.get("scan_sector") == sector_key:
+    st.divider()
+    _has_val = (
+        "validation" in st.session_state
+        and st.session_state.get("validation_sector") == sector_key
+    )
+    _rpt = generate_report(
+        sector_key,
+        st.session_state["results"],
+        st.session_state["validation"] if _has_val else None,
+    )
+    _fname = f"{sector_key}_analysis_{datetime.datetime.now().strftime('%Y%m%d_%H%M')}.md"
+    dl1, dl2 = st.columns([3, 1])
+    with dl1:
+        _label = (
+            "📄 Report includes sector analysis + AI validation"
+            if _has_val else
+            "📄 Report includes sector analysis only (run validation to include AI results)"
+        )
+        st.caption(_label)
+    with dl2:
+        st.download_button(
+            "⬇️ Download Report",
+            data=_rpt,
+            file_name=_fname,
+            mime="text/markdown",
+            use_container_width=True,
+            type="primary",
+        )
