@@ -35,6 +35,7 @@ from rich import box
 from rich.panel import Panel
 
 from config.sectors import SECTOR_TICKERS, SECTOR_DISPLAY
+from config.dynamic_fetch import fetch_sector_tickers
 from src.scorer import analyse_ticker, StockScore
 
 load_dotenv()
@@ -281,9 +282,16 @@ def serialise_result(r: StockScore) -> dict:
     }
 
 
-def run_analysis(sector_key: str) -> list[StockScore]:
-    tickers = SECTOR_TICKERS[sector_key]
-    console.print(f"\n[dim]Scanning {len(tickers)} tickers in [bold]{SECTOR_DISPLAY[sector_key]}[/bold]…[/dim]")
+def run_analysis(sector_key: str, live: bool = False) -> list[StockScore]:
+    if live:
+        tickers, source = fetch_sector_tickers(sector_key)
+    else:
+        tickers, source = SECTOR_TICKERS[sector_key], "curated"
+    src_tag = "[cyan](live)[/cyan]" if source == "live" else "[dim](curated)[/dim]"
+    console.print(
+        f"\n[dim]Scanning {len(tickers)} tickers in "
+        f"[bold]{SECTOR_DISPLAY[sector_key]}[/bold] {src_tag}…[/dim]"
+    )
 
     results = []
     with ThreadPoolExecutor(max_workers=MAX_WORKERS) as pool:

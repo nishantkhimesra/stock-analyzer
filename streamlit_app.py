@@ -7,6 +7,7 @@ import pandas as pd
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from config.sectors import SECTOR_TICKERS, SECTOR_DISPLAY
+from config.dynamic_fetch import fetch_sector_tickers
 from src.scorer import analyse_ticker
 
 try:
@@ -195,8 +196,24 @@ with st.sidebar:
         index=list(SECTOR_DISPLAY.keys()).index("tech"),
     )
     display_name = SECTOR_DISPLAY[sector_key]
-    tickers = SECTOR_TICKERS[sector_key]
-    st.caption(f"🔎 {len(tickers)} stocks in this sector")
+
+    live_mode = st.toggle(
+        "🌐 Live ticker list",
+        value=False,
+        help=(
+            "Fetch top stocks by market cap from Yahoo Finance screener. "
+            "Falls back to curated list for EV, Fintech, and on API errors."
+        ),
+    )
+
+    if live_mode:
+        _tickers, _source = fetch_sector_tickers(sector_key)
+    else:
+        _tickers, _source = SECTOR_TICKERS[sector_key], "curated"
+    tickers = _tickers
+
+    _src_badge = "🌐 Live (Yahoo screener)" if _source == "live" else "📋 Curated list"
+    st.caption(f"🔎 {len(tickers)} stocks · {_src_badge}")
 
     top_n = st.slider("Deep-dive picks to show", min_value=3, max_value=10, value=5)
 
