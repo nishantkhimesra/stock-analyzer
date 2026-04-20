@@ -112,20 +112,38 @@ leverage/liquidity (F5–F7), operating efficiency (F8–F9).
        up  = analyst_upside stripped of %, e.g. "43.9%" → 43.9
        fcf = fcf_yield as a number (0 if absent)
 
-  [1] IF cs == 0 AND p == 0                                        → "Avoid"
-  [2] IF (cs >= 56 AND up >= 30.0 AND p >= 5)                      → "Strong Buy"  # standard
-       OR (cs >= 65 AND p >= 7)                                     → "Strong Buy"  # quality
-       OR (fcf > 8.0 AND p >= 5 AND cs >= 52)                      → "Strong Buy"  # FCF bypass
-  [3] IF cs < 43 OR p <= 4                                         → "Hold"        # absolute floor
-  [4] IF cs >= 35 AND up >= 5.0                                     → "Buy"
-  [5] IF cs >= 20                                                   → "Hold"
-  [6] (default)                                                     → "Avoid"
+  [1] IF cs == 0 AND p == 0  →  "Avoid"
+
+  [2] STRONG BUY — three INDEPENDENT paths; ANY ONE is sufficient.
+      Check each path separately. If any path fires, the rating is Strong Buy.
+
+      Path A (quality bypass):  cs >= 65  AND  p >= 7
+      ┌──────────────────────────────────────────────────────────────────────┐
+      │ UPSIDE IS NOT CHECKED ON PATH A. analyst_upside is IRRELEVANT here.    │
+      │ cs=71, p=9, upside=16.8%  →  Path A fires  →  Strong Buy. CORRECT.     │
+      │ cs=65, p=9, upside=5%     →  Path A fires  →  Strong Buy. CORRECT.     │
+      │ Do NOT flag low upside as a problem for stocks on Path A.              │
+      └──────────────────────────────────────────────────────────────────────┘
+
+      Path B (standard):         cs >= 56  AND  up >= 30.0  AND  p >= 5
+      Path C (FCF bypass):       fcf > 8.0  AND  p >= 5  AND  cs >= 52
+
+  [3] IF cs < 43  OR  p <= 4  →  "Hold"   (absolute floor)
+      NOTE: p <= 4 triggers Hold regardless of analyst_upside.
+            A stock with p=3 and up=62% is STILL Hold. Upside does NOT override.
+            This is intentional — weak Piotroski means ≥5 financial health signals
+            are failing regardless of what analysts project for the price target.
+
+  [4] IF cs >= 35  AND  up >= 5.0  →  "Buy"
+  [5] IF cs >= 20  →  "Hold"
+  [6] (default)   →  "Avoid"
 
 **Operator semantics — ALL comparisons are INCLUSIVE on the boundary:**
   ">= 5"  means 5 OR HIGHER  — piotroski of exactly 5 PASSES the >= 5 test
   "<= 4"  means 4 OR LOWER   — piotroski of exactly 4 TRIGGERS the Hold floor
   "< 43"  means 42 or lower  — composite of exactly 43 does NOT trigger Hold floor
   ">= 30" means 30.0 or higher — upside of exactly 30.0% PASSES the Strong Buy gate
+  ">= 5.0" means 5.0 or higher — upside of 8.4% PASSES the Buy gate (8.4 > 5.0)
 
 **Known data limitations:**
 - Forward P/E from Yahoo is GAAP-based; non-GAAP guided EPS (common in software)
@@ -198,22 +216,31 @@ Below are the screening results.
   A negative-upside stock CANNOT be a top conviction pick or a Strong Buy.
   Treat negative upside as a bearish signal regardless of revenue growth or story.
 
-**Step 2 — Walk the decision tree (do NOT check gates independently)**
+**Step 2 — Arithmetic verification (MANDATORY before every gate comparison)**
 
-For each stock, read cs, p, up, and fcf from the JSON, then evaluate the
-decision tree above in order [1]→[2]→[3]→[4]→[5]→[6], stopping at the first
-branch that fires. The outcome of that walk is the correct rating.
+For every numeric gate check, write out the comparison explicitly:
+  - Gate: up >= 5.0. JSON value: "8.4%" → up = 8.4. Is 8.4 >= 5.0? YES. Gate passes.
+  - Gate: up >= 5.0. JSON value: "21.1%" → up = 21.1. Is 21.1 >= 5.0? YES. Gate passes.
+  - Gate: up >= 30.0. JSON value: "35.6%" → up = 35.6. Is 35.6 >= 30.0? YES. Path B passes.
+NEVER assert a comparison fails without showing the numbers. If you write
+"X < Y" you must verify X and Y are the actual JSON values for that ticker.
 
-Common mistakes to avoid:
-- Do NOT jump from "fails Strong Buy" directly to Avoid — Buy and Hold fire first.
-- Do NOT apply the p >= 7 rule except on the cs >= 65 quality-bypass path.
-- Do NOT trigger Hold floor [3] when cs = 43 exactly (< 43 means 42 or lower).
-- piotroski of exactly 5 PASSES >= 5. Do not write "5 is below the required 5".
-- A stock with cs >= 35 AND up >= 5% gets Buy at step [4] regardless of narrative.
+**Step 3 — Walk the decision tree (do NOT check gates independently)**
+
+For each stock, read cs, p, up, and fcf from the JSON. First check if Path A
+fires (cs >= 65 AND p >= 7). If yes → Strong Buy, done — do NOT also check upside.
+Then evaluate [1]→[3]→[4]→[5]→[6] in order, stopping at first match.
+
+Critical errors to avoid:
+- Path A requires NO upside check. Flagging low upside on a Path-A stock is WRONG.
+- Do NOT jump from "fails Strong Buy" to Avoid without checking Buy/Hold first.
+- piotroski of exactly 5 PASSES >= 5. Never write "5 is below the required 5".
+- A stock with cs >= 35 AND up >= 5% is Buy at [4] regardless of sector/narrative.
+- p <= 4 triggers Hold [3] regardless of upside. That is correct, not a bug.
 
 If the walk outcome matches rating_given → agree.
-If it differs → disagree, cite which step number produced a different result and
-show the exact values: e.g. "step [3] fires: cs=38 < 43 → Hold, not Buy".
+If it differs → disagree, cite the step and show the values:
+  e.g. "Path A fires: cs=71 >= 65 AND p=9 >= 7 → Strong Buy. Upside irrelevant."
 
 **Step 3 — Distress flags (independent of rating agreement)**
 - piotroski ≤ 2 on any Buy or Strong Buy → add concern, keep agreement if gates pass.
