@@ -8,6 +8,12 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from config.sectors import SECTOR_TICKERS, SECTOR_DISPLAY
 from src.scorer import analyse_ticker
 
+try:
+    from eval.evaluate import call_openai, is_azure, opinion_model, DEFAULT_MODEL
+    EVAL_AVAILABLE = True
+except Exception:
+    EVAL_AVAILABLE = False
+
 # ── Page config ───────────────────────────────────────────────────────────────
 st.set_page_config(
     page_title="Stock Growth Potential Analyser",
@@ -106,7 +112,7 @@ def ma_status(r):
 
 
 # ── Landing state ─────────────────────────────────────────────────────────────
-if not run_btn:
+if not run_btn and "results" not in st.session_state:
     st.info("👈 Select a sector from the sidebar and click **Analyse Sector** to begin.")
 
     c1, c2, c3, c4 = st.columns(4)
@@ -125,24 +131,29 @@ if not run_btn:
     st.stop()
 
 
-# ── Run analysis ──────────────────────────────────────────────────────────────
-st.subheader(f"🔄 Scanning {display_name}")
-progress_bar = st.progress(0, text="Starting…")
-status_placeholder = st.empty()
+# ── Run analysis (fresh scan or use cache) ────────────────────────────────────
+if run_btn or st.session_state.get("scan_sector") != sector_key:
+    st.subheader(f"🔄 Scanning {display_name}")
+    progress_bar = st.progress(0, text="Starting…")
+    status_placeholder = st.empty()
 
-results = []
-for i, ticker in enumerate(tickers):
-    status_placeholder.caption(f"Fetching **{ticker}** ({i + 1}/{len(tickers)})…")
-    progress_bar.progress((i + 1) / len(tickers), text=f"{ticker} ({i + 1}/{len(tickers)})")
-    results.append(analyse_ticker(ticker))
+    _res = []
+    for i, ticker in enumerate(tickers):
+        status_placeholder.caption(f"Fetching **{ticker}** ({i + 1}/{len(tickers)})…")
+        progress_bar.progress((i + 1) / len(tickers), text=f"{ticker} ({i + 1}/{len(tickers)})")
+        _res.append(analyse_ticker(ticker))
 
-progress_bar.empty()
-status_placeholder.empty()
+    progress_bar.empty()
+    status_placeholder.empty()
 
-# Sort by composite score descending, failed last
-results.sort(key=lambda r: (r.data_quality == "failed", -r.composite_score))
-valid = [r for r in results if r.data_quality != "failed"]
-failed = [r for r in results if r.data_quality == "failed"]
+    _res.sort(key=lambda r: (r.data_quality == "failed", -r.composite_score))
+    st.session_state["results"]     = _res
+    st.session_state["scan_sector"] = sector_key
+    st.session_state.pop("validation", None)  # clear stale validation on new scan
+
+results = st.session_state["results"]
+valid   = [r for r in results if r.data_quality != "failed"]
+failed  = [r for r in results if r.data_quality == "failed"]
 
 if not valid:
     st.error("No data could be retrieved. Check your internet connection or try again later.")
@@ -291,3 +302,105 @@ for r in valid[:picks_n]:
 # ── Failed tickers ────────────────────────────────────────────────────────────
 if failed:
     st.caption(f"⚠️ Could not fetch data for: {', '.join(r.ticker for r in failed)}")
+
+# ── AI Validation ─────────────────────────────────────────────────────────────
+st.divider()
+v_left, v_right = st.columns([4, 1])
+with v_left:
+    st.subheader("🤖 AI Validation")
+    if EVAL_AVAILABLE:
+        provider = "Azure OpenAI" if is_azure() else "OpenAI"
+        st.caption(
+            f"Uses **{provider}** to review whether each algo rating is defensible. "
+            "Runs independently of the sector scan — click once after analysis."
+        )
+    else:
+        st.caption("⚠️ Eval module unavailable — check OPENAI_API_KEY / Azure credentials in .env")
+with v_right:
+    val_btn = st.button(
+        "▶ Run Validation",
+        type="primary",
+        use_container_width=True,
+        disabled=not EVAL_AVAILABLE,
+    )
+
+if val_btn and EVAL_AVAILABLE:
+    with st.spinner("Calling AI validator — this takes ~15-30 s…"):
+        try:
+            _val = call_openai(results, sector_key, opinion_model(DEFAULT_MODEL))
+            st.session_state["validation"]        = _val
+            st.session_state["validation_sector"] = sector_key
+        except Exception as _e:
+            st.error(f"Validation failed: {_e}")
+
+if (
+    "validation" in st.session_state
+    and st.session_state.get("validation_sector") == sector_key
+):
+    _val = st.session_state["validation"]
+    stock_vals = {v["ticker"]: v for v in _val.get("stock_validations", [])}
+    ov = _val.get("overall_assessment", {})
+
+    # ── Per-stock table ───────────────────────────────────────────────────────
+    agree_icon  = {"agree": "✅", "partial": "⚠️", "disagree": "❌"}
+    conf_icon   = {"high": "🟢", "medium": "🟡", "low": "🔴"}
+
+    rows = []
+    for r in valid:
+        v = stock_vals.get(r.ticker, {})
+        agree = v.get("agreement", "—")
+        conf  = v.get("confidence", "—")
+        notes = v.get("notes", "")
+        concerns = v.get("concerns", [])
+        if concerns:
+            notes += "  ⚠ " + " · ".join(concerns)
+        rows.append({
+            "Ticker":      r.ticker,
+            "Algo Rating": r.analyst_rating,
+            "AI Says":     v.get("rating_suggested", "—"),
+            "Agreement":   f"{agree_icon.get(agree, '')} {agree}",
+            "Confidence":  f"{conf_icon.get(conf, '')} {conf}",
+            "Notes":       notes,
+        })
+
+    st.dataframe(
+        pd.DataFrame(rows),
+        use_container_width=True,
+        hide_index=True,
+        column_config={
+            "Notes": st.column_config.TextColumn("Notes", width="large"),
+        },
+    )
+
+    # ── Overall assessment ────────────────────────────────────────────────────
+    with st.expander("📋 Overall Assessment", expanded=True):
+        summary = ov.get("sector_summary", "")
+        if summary:
+            st.info(summary)
+
+        oa1, oa2 = st.columns(2)
+        with oa1:
+            if ov.get("top_conviction_picks"):
+                st.markdown("**🏆 Top Conviction Picks**")
+                for t in ov["top_conviction_picks"]:
+                    st.markdown(f"- {t}")
+            if ov.get("most_contested_ratings"):
+                st.markdown("**⚖️ Most Contested Ratings**")
+                for t in ov["most_contested_ratings"]:
+                    st.markdown(f"- {t}")
+        with oa2:
+            if ov.get("systemic_issues"):
+                st.markdown("**⚠️ Systemic Issues**")
+                for item in ov["systemic_issues"]:
+                    st.markdown(f"- {item}")
+            if ov.get("data_quality_flags"):
+                st.markdown("**🚩 Data Quality Flags**")
+                for t in ov["data_quality_flags"]:
+                    st.markdown(f"- {t}")
+
+    disagreements = [
+        v["ticker"] for v in _val.get("stock_validations", [])
+        if v.get("agreement") == "disagree"
+    ]
+    if disagreements:
+        st.warning(f"AI disagrees on: {', '.join(disagreements)}")
