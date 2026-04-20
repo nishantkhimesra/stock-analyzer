@@ -6,15 +6,16 @@ Modes:
   grounded            — GPT uses live web search to verify price / analyst PT / revenue data
   both                — runs opinion first, then grounded fact-check
 
+Providers (auto-detected from .env):
+  OpenAI  — set OPENAI_API_KEY
+  Azure   — set AZURE_OPENAI_ENDPOINT + AZURE_OPENAI_API_KEY + AZURE_OPENAI_DEPLOYMENT
+             (optional) BING_SEARCH_KEY enables live web search in grounded mode
+
 Usage:
     python eval/evaluate.py --sector tech
     python eval/evaluate.py --sector semiconductor --model gpt-4o
     python eval/evaluate.py --sector fintech --mode grounded
     python eval/evaluate.py --sector tech --mode both --save run.json
-
-Requires:
-    OPENAI_API_KEY set in environment (or .env file)
-    openai >= 1.66.0 for grounded mode (Responses API + web search)
 """
 
 import sys
@@ -25,7 +26,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from openai import OpenAI
+from openai import AzureOpenAI, OpenAI
 from dotenv import load_dotenv
 from rich.console import Console
 from rich.table import Table
@@ -40,9 +41,48 @@ load_dotenv()
 
 console = Console()
 
-DEFAULT_MODEL   = "gpt-4o-mini"          # opinion mode — fast & cheap
-GROUNDED_MODEL  = "gpt-4o-mini-search-preview"  # grounded mode — web search built into the model
+DEFAULT_MODEL   = "gpt-4o-mini"           # opinion mode — OpenAI model name
+GROUNDED_MODEL  = "gpt-4o-mini-search-preview"  # grounded mode — OpenAI only
+AZURE_API_VER   = "2025-01-01-preview"    # Azure OpenAI API version
 MAX_WORKERS     = 3
+
+
+def is_azure() -> bool:
+    """True when Azure credentials are present in the environment."""
+    return bool(os.environ.get("AZURE_OPENAI_ENDPOINT"))
+
+
+def build_client():
+    """Return an OpenAI or AzureOpenAI client based on available env vars."""
+    if is_azure():
+        key      = os.environ.get("AZURE_OPENAI_API_KEY")
+        endpoint = os.environ.get("AZURE_OPENAI_ENDPOINT")
+        version  = os.environ.get("AZURE_OPENAI_API_VERSION", AZURE_API_VER)
+        if not key or not endpoint:
+            console.print(
+                "[red]Error:[/red] Azure mode requires AZURE_OPENAI_API_KEY "
+                "and AZURE_OPENAI_ENDPOINT in your .env file."
+            )
+            sys.exit(1)
+        return AzureOpenAI(api_key=key, azure_endpoint=endpoint, api_version=version)
+
+    key = os.environ.get("OPENAI_API_KEY")
+    if not key:
+        console.print(
+            "[red]Error:[/red] No API key found. Set OPENAI_API_KEY (OpenAI) "
+            "or AZURE_OPENAI_ENDPOINT + AZURE_OPENAI_API_KEY (Azure) in your .env file."
+        )
+        sys.exit(1)
+    return OpenAI(api_key=key)
+
+
+def opinion_model(cli_model: str) -> str:
+    """Resolve model/deployment name for opinion mode."""
+    if cli_model != DEFAULT_MODEL:
+        return cli_model  # explicit --model flag always wins
+    if is_azure():
+        return os.environ.get("AZURE_OPENAI_DEPLOYMENT", "gpt-4o-mini")
+    return DEFAULT_MODEL
 
 SCORING_CONTEXT = """
 ## Scoring Methodology
@@ -214,12 +254,10 @@ def run_analysis(sector_key: str) -> list[StockScore]:
 
 
 def call_openai(results: list[StockScore], sector_key: str, model: str) -> dict:
-    api_key = os.environ.get("OPENAI_API_KEY")
-    if not api_key:
-        console.print("[red]Error:[/red] OPENAI_API_KEY not set. Add it to your .env file.")
-        sys.exit(1)
+    provider = "Azure" if is_azure() else "OpenAI"
+    client   = build_client()
 
-    valid = [r for r in results if r.data_quality != "failed"]
+    valid   = [r for r in results if r.data_quality != "failed"]
     payload = [serialise_result(r) for r in valid]
 
     prompt = VALIDATION_PROMPT.format(
@@ -228,9 +266,8 @@ def call_openai(results: list[StockScore], sector_key: str, model: str) -> dict:
         results_json=json.dumps(payload, indent=2),
     )
 
-    console.print(f"\n[dim]Calling OpenAI ({model}) for validation…[/dim]")
+    console.print(f"\n[dim]Calling {provider} ({model}) for validation…[/dim]")
 
-    client = OpenAI(api_key=api_key)
     response = client.chat.completions.create(
         model=model,
         max_tokens=4096,
@@ -239,8 +276,6 @@ def call_openai(results: list[StockScore], sector_key: str, model: str) -> dict:
     )
 
     raw = response.choices[0].message.content.strip()
-
-    # Strip markdown fences if the model wraps the JSON anyway
     if raw.startswith("```"):
         raw = raw.split("```")[1]
         if raw.startswith("json"):
@@ -250,13 +285,14 @@ def call_openai(results: list[StockScore], sector_key: str, model: str) -> dict:
 
 
 def call_openai_grounded(results: list[StockScore], top_n: int = 8) -> dict:
-    """Fact-check top_n stocks via OpenAI web search (Responses API)."""
-    api_key = os.environ.get("OPENAI_API_KEY")
-    if not api_key:
-        console.print("[red]Error:[/red] OPENAI_API_KEY not set. Add it to your .env file.")
-        sys.exit(1)
+    """Fact-check top_n stocks using web search.
 
-    client = OpenAI(api_key=api_key)
+    OpenAI: uses gpt-4o-mini-search-preview (web search built-in).
+    Azure:  uses the configured deployment + Bing Search grounding
+            if BING_SEARCH_KEY is set, otherwise falls back to model
+            knowledge only (no live search) with a warning.
+    """
+    client = build_client()
 
     valid = [r for r in results if r.data_quality != "failed"][:top_n]
     payload = [
@@ -265,33 +301,70 @@ def call_openai_grounded(results: list[StockScore], top_n: int = 8) -> dict:
             "company":      r.company_name,
             "price_stated": round(r.current_price, 2) if r.current_price else None,
             "analyst_pt":   round(r.analyst_target, 2) if r.analyst_target else None,
-            "rev_growth":   f"{r.revenue_growth_yoy*100:.1f}%" if r.revenue_growth_yoy else None,
+            "rev_growth":   f"{r.revenue_growth_yoy*100:.1f}%"
+                            if r.revenue_growth_yoy else None,
         }
         for r in valid
     ]
 
     prompt = GROUNDING_PROMPT.format(stocks_json=json.dumps(payload, indent=2))
-    console.print(
-        f"\n[dim]Calling OpenAI web search ({GROUNDED_MODEL}) "
-        f"to fact-check top {len(valid)} stocks…[/dim]"
-    )
 
-    # gpt-4o-mini-search-preview does live web search natively via Chat Completions.
-    # The Responses API (client.responses.create) does NOT accept search-preview models.
-    try:
+    if is_azure():
+        model      = os.environ.get("AZURE_OPENAI_DEPLOYMENT", "gpt-4o-mini")
+        bing_key   = os.environ.get("BING_SEARCH_KEY")
+        bing_ep    = os.environ.get(
+            "BING_SEARCH_ENDPOINT", "https://api.bing.microsoft.com/"
+        )
+        extra: dict = {}
+        if bing_key:
+            console.print(
+                f"\n[dim]Calling Azure ({model} + Bing grounding) "
+                f"to fact-check top {len(valid)} stocks…[/dim]"
+            )
+            extra = {
+                "extra_body": {
+                    "data_sources": [{
+                        "type": "bing_search",
+                        "parameters": {
+                            "endpoint": bing_ep,
+                            "key": bing_key,
+                            "search_top_n": 5,
+                        },
+                    }]
+                }
+            }
+        else:
+            console.print(
+                f"\n[yellow]⚠ BING_SEARCH_KEY not set — Azure grounded mode will use "
+                f"model knowledge only (no live web search).[/yellow]\n"
+                f"[dim]Calling Azure ({model}) to fact-check top {len(valid)} stocks…[/dim]"
+            )
         response = client.chat.completions.create(
-            model=GROUNDED_MODEL,
+            model=model,
             max_tokens=4096,
             messages=[{"role": "user", "content": prompt}],
+            **extra,
         )
-    except Exception as e:
-        if "404" in str(e) or "not found" in str(e).lower():
-            console.print(
-                f"[red]Error:[/red] Model '{GROUNDED_MODEL}' not found.\\n"
-                "Verify access at: https://platform.openai.com/account/rate-limits"
+    else:
+        # OpenAI: gpt-4o-mini-search-preview has web search built into the model.
+        console.print(
+            f"\n[dim]Calling OpenAI web search ({GROUNDED_MODEL}) "
+            f"to fact-check top {len(valid)} stocks…[/dim]"
+        )
+        try:
+            response = client.chat.completions.create(
+                model=GROUNDED_MODEL,
+                max_tokens=4096,
+                messages=[{"role": "user", "content": prompt}],
             )
-            sys.exit(1)
-        raise
+        except Exception as e:
+            if "404" in str(e) or "not found" in str(e).lower():
+                console.print(
+                    f"[red]Error:[/red] Model '{GROUNDED_MODEL}' not found. "
+                    "Verify at: https://platform.openai.com/account/rate-limits"
+                )
+                sys.exit(1)
+            raise
 
     raw = response.choices[0].message.content.strip()
     if raw.startswith("```"):
@@ -433,7 +506,7 @@ def main():
     output  = {}
 
     if args.mode in ("opinion", "both"):
-        validation = call_openai(results, args.sector, args.model)
+        validation = call_openai(results, args.sector, opinion_model(args.model))
         output["opinion"] = validation
         render_report(results, validation, args.sector)
 
