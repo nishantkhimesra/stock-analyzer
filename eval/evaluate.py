@@ -41,7 +41,7 @@ load_dotenv()
 console = Console()
 
 DEFAULT_MODEL   = "gpt-4o-mini"          # opinion mode — fast & cheap
-GROUNDED_MODEL  = "gpt-4o-search-preview"  # grounded mode — web search enabled via Responses API
+GROUNDED_MODEL  = "gpt-4o-mini-search-preview"  # grounded mode — web search built into the model
 MAX_WORKERS     = 3
 
 SCORING_CONTEXT = """
@@ -257,21 +257,15 @@ def call_openai_grounded(results: list[StockScore], top_n: int = 8) -> dict:
         sys.exit(1)
 
     client = OpenAI(api_key=api_key)
-    if not hasattr(client, "responses"):
-        console.print(
-            "[red]Error:[/red] openai SDK >= 1.66.0 required for grounded mode.\n"
-            "Run: pip install -U openai"
-        )
-        sys.exit(1)
 
     valid = [r for r in results if r.data_quality != "failed"][:top_n]
     payload = [
         {
-            "ticker":          r.ticker,
-            "company":         r.company_name,
-            "price_stated":    round(r.current_price, 2) if r.current_price else None,
-            "analyst_pt":      round(r.analyst_target, 2) if r.analyst_target else None,
-            "rev_growth":      f"{r.revenue_growth_yoy*100:.1f}%" if r.revenue_growth_yoy else None,
+            "ticker":       r.ticker,
+            "company":      r.company_name,
+            "price_stated": round(r.current_price, 2) if r.current_price else None,
+            "analyst_pt":   round(r.analyst_target, 2) if r.analyst_target else None,
+            "rev_growth":   f"{r.revenue_growth_yoy*100:.1f}%" if r.revenue_growth_yoy else None,
         }
         for r in valid
     ]
@@ -282,23 +276,24 @@ def call_openai_grounded(results: list[StockScore], top_n: int = 8) -> dict:
         f"to fact-check top {len(valid)} stocks…[/dim]"
     )
 
+    # gpt-4o-mini-search-preview does live web search natively via Chat Completions.
+    # The Responses API (client.responses.create) does NOT accept search-preview models.
     try:
-        response = client.responses.create(
+        response = client.chat.completions.create(
             model=GROUNDED_MODEL,
-            tools=[{"type": "web_search_preview"}],
-            input=prompt,
+            max_tokens=4096,
+            messages=[{"role": "user", "content": prompt}],
         )
     except Exception as e:
         if "404" in str(e) or "not found" in str(e).lower():
             console.print(
-                f"[red]Error:[/red] Model '{GROUNDED_MODEL}' not available on your API tier.\n"
-                "OpenAI web search requires a Tier 1+ account (first billing payment made).\n"
-                "Check access at: https://platform.openai.com/docs/models/gpt-4o-search-preview"
+                f"[red]Error:[/red] Model '{GROUNDED_MODEL}' not found.\\n"
+                "Verify access at: https://platform.openai.com/account/rate-limits"
             )
             sys.exit(1)
         raise
 
-    raw = response.output_text.strip()
+    raw = response.choices[0].message.content.strip()
     if raw.startswith("```"):
         raw = raw.split("```")[1]
         if raw.startswith("json"):
