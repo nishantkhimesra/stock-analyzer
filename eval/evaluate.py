@@ -1,13 +1,20 @@
 """
 eval/evaluate.py — AI-powered validation agent for stock screening results.
 
+Modes:
+  opinion  (default) — GPT reviews rating logic as a second opinion
+  grounded            — GPT uses live web search to verify price / analyst PT / revenue data
+  both                — runs opinion first, then grounded fact-check
+
 Usage:
     python eval/evaluate.py --sector tech
     python eval/evaluate.py --sector semiconductor --model gpt-4o
-    python eval/evaluate.py --sector fintech --save fintech_validation.json
+    python eval/evaluate.py --sector fintech --mode grounded
+    python eval/evaluate.py --sector tech --mode both --save run.json
 
 Requires:
     OPENAI_API_KEY set in environment (or .env file)
+    openai >= 1.66.0 for grounded mode (Responses API + web search)
 """
 
 import sys
@@ -33,8 +40,9 @@ load_dotenv()
 
 console = Console()
 
-DEFAULT_MODEL = "gpt-4o-mini"  # fast & cheap; use gpt-4o for deeper analysis
-MAX_WORKERS   = 3
+DEFAULT_MODEL   = "gpt-4o-mini"          # opinion mode — fast & cheap
+GROUNDED_MODEL  = "gpt-4o-mini-search-preview"  # grounded mode — web search enabled
+MAX_WORKERS     = 3
 
 SCORING_CONTEXT = """
 ## Scoring Methodology
@@ -60,7 +68,7 @@ leverage/liquidity (F5–F7), operating efficiency (F8–F9).
 - Strong Buy: (composite ≥ 56 AND analyst upside ≥ 30% AND Piotroski ≥ 5)
               OR (composite ≥ 65 AND Piotroski ≥ 7) [fundamental bypass for
               stocks like MU where price already moved but quality is exceptional]
-- Hold gate:  composite < 43 OR (Piotroski ≤ 4 AND upside < 20%)
+- Hold gate:  composite < 43 OR Piotroski ≤ 4  (absolute floor — high upside does not override)
 - Buy:        composite ≥ 35 AND analyst upside ≥ 5%
 - Hold:       composite ≥ 20
 - Avoid:      composite < 20
@@ -120,8 +128,49 @@ Respond with **valid JSON only** (no markdown fences, no preamble). Use this exa
 """
 
 
+GROUNDING_PROMPT = """
+You are a financial data accuracy agent. Use web search to verify the following
+stock data points that were pulled from Yahoo Finance earlier today.
+
+For each stock, search and verify:
+1. **Current price** — is the stated price within ±10% of what you find?
+2. **Analyst consensus PT** — does the stated target match the median Street target?
+3. **Revenue growth YoY** — does the stated growth match the most recent reported figures?
+
+Stocks to verify:
+{stocks_json}
+
+Rules:
+- Search for each stock individually; do not skip any.
+- If a data point cannot be found or verified, mark it as "unverified".
+- Flag any discrepancy > 10% on price or > 15% on analyst PT as a concern.
+- Revenue growth discrepancy > 3 percentage points is worth flagging.
+
+Respond with ONLY valid JSON (no markdown fences, no preamble). Schema:
+{{
+  "data_checks": [
+    {{
+      "ticker": "CRM",
+      "price_stated": 185.0,
+      "price_found": "183.50",
+      "price_ok": true,
+      "pt_stated": 268.0,
+      "pt_found": "230.00",
+      "pt_ok": false,
+      "rev_growth_stated": "12.1%",
+      "rev_growth_found": "11.8%",
+      "rev_growth_ok": true,
+      "flags": ["analyst PT may be stale — found $230 vs stated $268"],
+      "data_ok": true
+    }}
+  ],
+  "grounding_summary": "2-sentence overall data accuracy assessment"
+}}
+"""
+
+
 def serialise_result(r: StockScore) -> dict:
-    """Convert a StockScore to a compact dict for the Claude prompt."""
+    """Convert a StockScore to a compact dict for the opinion prompt."""
     return {
         "ticker":           r.ticker,
         "company":          r.company_name,
@@ -200,6 +249,102 @@ def call_openai(results: list[StockScore], sector_key: str, model: str) -> dict:
     return json.loads(raw)
 
 
+def call_openai_grounded(results: list[StockScore], top_n: int = 8) -> dict:
+    """Fact-check top_n stocks via OpenAI web search (Responses API)."""
+    api_key = os.environ.get("OPENAI_API_KEY")
+    if not api_key:
+        console.print("[red]Error:[/red] OPENAI_API_KEY not set. Add it to your .env file.")
+        sys.exit(1)
+
+    client = OpenAI(api_key=api_key)
+    if not hasattr(client, "responses"):
+        console.print(
+            "[red]Error:[/red] openai SDK >= 1.66.0 required for grounded mode.\n"
+            "Run: pip install -U openai"
+        )
+        sys.exit(1)
+
+    valid = [r for r in results if r.data_quality != "failed"][:top_n]
+    payload = [
+        {
+            "ticker":          r.ticker,
+            "company":         r.company_name,
+            "price_stated":    round(r.current_price, 2) if r.current_price else None,
+            "analyst_pt":      round(r.analyst_target, 2) if r.analyst_target else None,
+            "rev_growth":      f"{r.revenue_growth_yoy*100:.1f}%" if r.revenue_growth_yoy else None,
+        }
+        for r in valid
+    ]
+
+    prompt = GROUNDING_PROMPT.format(stocks_json=json.dumps(payload, indent=2))
+    console.print(
+        f"\n[dim]Calling OpenAI web search ({GROUNDED_MODEL}) "
+        f"to fact-check top {len(valid)} stocks…[/dim]"
+    )
+
+    response = client.responses.create(
+        model=GROUNDED_MODEL,
+        tools=[{"type": "web_search_preview"}],
+        input=prompt,
+    )
+
+    raw = response.output_text.strip()
+    if raw.startswith("```"):
+        raw = raw.split("```")[1]
+        if raw.startswith("json"):
+            raw = raw[4:]
+
+    return json.loads(raw)
+
+
+def render_grounding_report(grounding: dict, sector_key: str):
+    """Render the web-search data accuracy report."""
+    sector_name = SECTOR_DISPLAY[sector_key]
+    checks = {c["ticker"]: c for c in grounding.get("data_checks", [])}
+
+    console.print()
+    console.print(Rule(
+        f"[bold white] Web-Search Grounding Report — {sector_name} [/bold white]",
+        style="magenta",
+    ))
+
+    table = Table(box=box.SIMPLE_HEAVY, header_style="bold magenta", show_lines=False, padding=(0, 1))
+    table.add_column("Ticker",       style="bold white", width=7)
+    table.add_column("Price (stated→found)",   width=22)
+    table.add_column("Analyst PT (stated→found)", width=26)
+    table.add_column("Rev Growth (stated→found)", width=26)
+    table.add_column("Flags",        width=44, no_wrap=False)
+
+    ok_colour   = {True: "green", False: "red"}
+    unverified  = "[dim]unverified[/dim]"
+
+    for ticker, c in checks.items():
+        def fmt_pair(stated, found, ok):
+            if found in (None, "", "unverified"):
+                return f"{stated} → {unverified}"
+            colour = ok_colour.get(ok, "white")
+            return f"{stated} → [{colour}]{found}[/{colour}]"
+
+        price_cell = fmt_pair(c.get("price_stated"), c.get("price_found"), c.get("price_ok"))
+        pt_cell    = fmt_pair(c.get("pt_stated"),    c.get("pt_found"),    c.get("pt_ok"))
+        rev_cell   = fmt_pair(c.get("rev_growth_stated"), c.get("rev_growth_found"), c.get("rev_growth_ok"))
+        flags      = "  ".join(f"[yellow]⚠ {f}[/yellow]" for f in c.get("flags", []))
+
+        table.add_row(ticker, price_cell, pt_cell, rev_cell, flags or "[dim green]clean[/dim green]")
+
+    console.print(table)
+
+    summary = grounding.get("grounding_summary", "")
+    if summary:
+        console.print(Panel(summary, title="Grounding Summary", border_style="dim magenta"))
+
+    dirty = [t for t, c in checks.items() if not c.get("data_ok", True)]
+    if dirty:
+        console.print(f"[red]⚠  Potentially stale data for: {', '.join(dirty)}[/red]\n")
+    else:
+        console.print("[green]✓  All verified data points look accurate.[/green]\n")
+
+
 def render_report(results: list[StockScore], validation: dict, sector_key: str):
     sector_name = SECTOR_DISPLAY[sector_key]
     ov = validation.get("overall_assessment", {})
@@ -269,30 +414,50 @@ def main():
     parser.add_argument("--sector", required=True, choices=list(SECTOR_TICKERS.keys()),
                         help="Sector to analyse and validate")
     parser.add_argument("--model",  default=DEFAULT_MODEL,
-                        help=f"OpenAI model to use (default: {DEFAULT_MODEL})")
+                        help=f"OpenAI model for opinion mode (default: {DEFAULT_MODEL})")
+    parser.add_argument("--mode",   default="opinion",
+                        choices=["opinion", "grounded", "both"],
+                        help="opinion: logic review | grounded: web fact-check | both: run both")
+    parser.add_argument("--grounded-top", type=int, default=8, metavar="N",
+                        help="Number of top stocks to fact-check in grounded mode (default: 8)")
     parser.add_argument("--save",   metavar="FILE",
-                        help="Save raw Claude JSON response to a file")
+                        help="Save raw JSON output(s) to a file")
     args = parser.parse_args()
 
-    results    = run_analysis(args.sector)
-    validation = call_openai(results, args.sector, args.model)
+    results = run_analysis(args.sector)
+    output  = {}
+
+    if args.mode in ("opinion", "both"):
+        validation = call_openai(results, args.sector, args.model)
+        output["opinion"] = validation
+        render_report(results, validation, args.sector)
+
+        disagreements = [
+            v for v in validation.get("stock_validations", [])
+            if v.get("agreement") == "disagree"
+        ]
+        if disagreements:
+            tickers = ", ".join(v["ticker"] for v in disagreements)
+            console.print(f"[yellow]⚠  OpenAI disagrees on: {tickers}[/yellow]")
+
+    if args.mode in ("grounded", "both"):
+        grounding = call_openai_grounded(results, top_n=args.grounded_top)
+        output["grounded"] = grounding
+        render_grounding_report(grounding, args.sector)
 
     if args.save:
         with open(args.save, "w") as f:
-            json.dump(validation, f, indent=2)
-        console.print(f"[dim]Raw validation saved to {args.save}[/dim]")
+            json.dump(output, f, indent=2)
+        console.print(f"[dim]Output saved to {args.save}[/dim]")
 
-    render_report(results, validation, args.sector)
-
-    # Exit non-zero if OpenAI flagged any disagreements
-    disagreements = [
-        v for v in validation.get("stock_validations", [])
-        if v.get("agreement") == "disagree"
-    ]
-    if disagreements:
-        tickers = ", ".join(v["ticker"] for v in disagreements)
-        console.print(f"[yellow]⚠  OpenAI disagrees on: {tickers}[/yellow]\n")
-        sys.exit(1)
+    # Exit non-zero if any data accuracy issues were found
+    if "grounded" in output:
+        dirty = [
+            c["ticker"] for c in output["grounded"].get("data_checks", [])
+            if not c.get("data_ok", True)
+        ]
+        if dirty:
+            sys.exit(1)
 
 
 if __name__ == "__main__":
