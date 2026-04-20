@@ -1,13 +1,13 @@
 """
-eval/evaluate.py — Claude-powered validation agent for stock screening results.
+eval/evaluate.py — AI-powered validation agent for stock screening results.
 
 Usage:
     python eval/evaluate.py --sector tech
-    python eval/evaluate.py --sector semiconductor --model claude-opus-4-5
-    python eval/evaluate.py --sector fintech --top 15
+    python eval/evaluate.py --sector semiconductor --model gpt-4o
+    python eval/evaluate.py --sector fintech --save fintech_validation.json
 
 Requires:
-    ANTHROPIC_API_KEY set in environment (or .env file)
+    OPENAI_API_KEY set in environment (or .env file)
 """
 
 import sys
@@ -18,7 +18,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-import anthropic
+from openai import OpenAI
 from dotenv import load_dotenv
 from rich.console import Console
 from rich.table import Table
@@ -33,7 +33,7 @@ load_dotenv()
 
 console = Console()
 
-DEFAULT_MODEL = "claude-3-5-haiku-20241022"
+DEFAULT_MODEL = "gpt-4o-mini"  # fast & cheap; use gpt-4o for deeper analysis
 MAX_WORKERS   = 3
 
 SCORING_CONTEXT = """
@@ -164,10 +164,10 @@ def run_analysis(sector_key: str) -> list[StockScore]:
     return results
 
 
-def call_claude(results: list[StockScore], sector_key: str, model: str) -> dict:
-    api_key = os.environ.get("ANTHROPIC_API_KEY")
+def call_openai(results: list[StockScore], sector_key: str, model: str) -> dict:
+    api_key = os.environ.get("OPENAI_API_KEY")
     if not api_key:
-        console.print("[red]Error:[/red] ANTHROPIC_API_KEY not set. Add it to your .env file.")
+        console.print("[red]Error:[/red] OPENAI_API_KEY not set. Add it to your .env file.")
         sys.exit(1)
 
     valid = [r for r in results if r.data_quality != "failed"]
@@ -179,18 +179,19 @@ def call_claude(results: list[StockScore], sector_key: str, model: str) -> dict:
         results_json=json.dumps(payload, indent=2),
     )
 
-    console.print(f"\n[dim]Calling Claude ({model}) for validation…[/dim]")
+    console.print(f"\n[dim]Calling OpenAI ({model}) for validation…[/dim]")
 
-    client = anthropic.Anthropic(api_key=api_key)
-    message = client.messages.create(
+    client = OpenAI(api_key=api_key)
+    response = client.chat.completions.create(
         model=model,
         max_tokens=4096,
+        response_format={"type": "json_object"},
         messages=[{"role": "user", "content": prompt}],
     )
 
-    raw = message.content[0].text.strip()
+    raw = response.choices[0].message.content.strip()
 
-    # Strip markdown fences if Claude wraps the JSON anyway
+    # Strip markdown fences if the model wraps the JSON anyway
     if raw.startswith("```"):
         raw = raw.split("```")[1]
         if raw.startswith("json"):
@@ -264,17 +265,17 @@ def render_report(results: list[StockScore], validation: dict, sector_key: str):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Claude validation agent for stock screening results")
+    parser = argparse.ArgumentParser(description="AI validation agent for stock screening results")
     parser.add_argument("--sector", required=True, choices=list(SECTOR_TICKERS.keys()),
                         help="Sector to analyse and validate")
     parser.add_argument("--model",  default=DEFAULT_MODEL,
-                        help=f"Claude model to use (default: {DEFAULT_MODEL})")
+                        help=f"OpenAI model to use (default: {DEFAULT_MODEL})")
     parser.add_argument("--save",   metavar="FILE",
                         help="Save raw Claude JSON response to a file")
     args = parser.parse_args()
 
     results    = run_analysis(args.sector)
-    validation = call_claude(results, args.sector, args.model)
+    validation = call_openai(results, args.sector, args.model)
 
     if args.save:
         with open(args.save, "w") as f:
@@ -283,14 +284,14 @@ def main():
 
     render_report(results, validation, args.sector)
 
-    # Exit non-zero if Claude flagged any disagreements
+    # Exit non-zero if OpenAI flagged any disagreements
     disagreements = [
         v for v in validation.get("stock_validations", [])
         if v.get("agreement") == "disagree"
     ]
     if disagreements:
         tickers = ", ".join(v["ticker"] for v in disagreements)
-        console.print(f"[yellow]⚠  Claude disagrees on: {tickers}[/yellow]\n")
+        console.print(f"[yellow]⚠  OpenAI disagrees on: {tickers}[/yellow]\n")
         sys.exit(1)
 
 
