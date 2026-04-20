@@ -128,12 +128,38 @@ Do not apply the p ≥ 7 rule to stocks on the standard or FCF bypass path.
   margin are flagged as "hyper_growth" — likely measurement artefacts, not distress.
 """
 
+VALIDATION_SYSTEM_MSG = (
+    "You are a quantitative data validator. "
+    "You reason EXCLUSIVELY from the numeric values present in the JSON payload "
+    "provided by the user. "
+    "You NEVER use your training-time knowledge of any stock's composite score, "
+    "Piotroski score, analyst upside, or analyst price target — those numbers "
+    "change daily and your internal memory of them is unreliable. "
+    "If the JSON says composite=58 for MSFT, the composite is 58. Full stop. "
+    "Before judging any stock, transcribe composite, piotroski, and "
+    "analyst_upside verbatim from the JSON. Writing a value not present "
+    "in the JSON for that ticker is a critical error."
+)
+
 VALIDATION_PROMPT = """
-You are a senior quantitative analyst validating algorithmic stock screening output.
+Below are the screening results for the **{sector}** sector.
 
 {scoring_context}
 
-Below are the screening results for the **{sector}** sector.
+## ⚠ CRITICAL — Ground every judgment in the JSON below
+
+The JSON contains the ONLY authoritative values for composite, piotroski, and
+analyst_upside for this run. Do NOT use your memory of what these numbers
+"should be" for well-known stocks. The numbers in the JSON are current;
+your training data is not.
+
+For every stock, the `notes` field MUST begin with:
+  `composite=<value>, piotroski=<value>, upside=<value> —`
+(copy these three values verbatim from the JSON before writing any judgment).
+If you write a number that does not appear in the JSON for that ticker, that is
+a validation error.
+
+Below are the screening results.
 
 ---
 
@@ -328,7 +354,10 @@ def call_openai(results: list[StockScore], sector_key: str, model: str) -> dict:
         model=model,
         max_tokens=4096,
         response_format={"type": "json_object"},
-        messages=[{"role": "user", "content": prompt}],
+        messages=[
+            {"role": "system", "content": VALIDATION_SYSTEM_MSG},
+            {"role": "user",   "content": prompt},
+        ],
     )
 
     raw = response.choices[0].message.content.strip()
