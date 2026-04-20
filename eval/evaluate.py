@@ -126,10 +126,7 @@ You are a senior quantitative analyst validating algorithmic stock screening out
 
 {scoring_context}
 
-Below are the screening results for the **{sector}** sector. Your job is to:
-1. Validate whether each rating is defensible given the metrics.
-2. Flag data anomalies, edge cases, or stocks where you'd assign a different rating.
-3. Identify any systemic patterns or calibration issues across the sector.
+Below are the screening results for the **{sector}** sector.
 
 ---
 
@@ -141,7 +138,39 @@ Below are the screening results for the **{sector}** sector. Your job is to:
 
 ---
 
-## Your Task
+## Validation Rules — follow these IN ORDER for every stock
+
+**Step 1 — Upside check (read the number, do not infer direction from narrative)**
+- `analyst_upside` is the % gap between current price and mean analyst price target.
+- If `analyst_upside` is negative or null, the stock trades AT or ABOVE its target.
+  A negative-upside stock CANNOT be a top conviction pick or a Strong Buy.
+  Treat negative upside as a bearish signal regardless of revenue growth or story.
+
+**Step 2 — Piotroski gate**
+- Strong Buy requires Piotroski ≥ 5. If piotroski < 5 and the algo says Strong Buy,
+  flag it unless `piotroski_context = "hyper_growth"` (fast-growing profitable company
+  where low Piotroski is a measurement artefact — explicitly noted in the data).
+- Piotroski ≤ 2 is a distress signal. Flag any Buy or Strong Buy with piotroski ≤ 2.
+
+**Step 3 — Composite threshold**
+- Strong Buy requires composite ≥ 56. Buy requires composite ≥ 35.
+- If the composite does not meet the threshold for the given rating, disagree and
+  explain which numeric gate was missed.
+
+**Step 4 — Internal consistency**
+- Check that `revenue_growth`, `fwd_pe`, `rsi_14`, and `analyst_upside` are mutually
+  consistent with the rating. A stock with fwd_pe > 60 AND negative upside AND
+  piotroski ≤ 3 should not be Buy or Strong Buy regardless of revenue growth.
+- Do NOT infer rating from company name, sector narrative, or revenue growth alone.
+
+**Step 5 — Flag stale or suspicious data**
+- Flag any `fwd_pe` that looks implausibly low for a loss-making company (post-bankruptcy
+  accounting can produce artificially positive forward EPS estimates).
+- Flag any `analyst_upside` > 150% on a stock with piotroski ≤ 3 as possibly stale data.
+
+---
+
+## Output
 
 Respond with **valid JSON only** (no markdown fences, no preamble). Use this exact schema:
 
@@ -154,14 +183,14 @@ Respond with **valid JSON only** (no markdown fences, no preamble). Use this exa
       "agreement": "agree|partial|disagree",
       "confidence": "high|medium|low",
       "concerns": [],
-      "notes": "one-sentence rationale"
+      "notes": "one-sentence rationale citing specific numbers (upside %, piotroski, composite)"
     }}
   ],
   "overall_assessment": {{
-    "sector_summary": "2-3 sentence overview of the sector's health based on results",
+    "sector_summary": "2-3 sentence overview citing avg composite and upside distribution",
     "systemic_issues": ["any patterns or calibration concerns across the whole run"],
-    "top_conviction_picks": ["up to 3 tickers you most agree with"],
-    "most_contested_ratings": ["tickers where you'd assign a different rating"],
+    "top_conviction_picks": ["up to 3 tickers: positive upside + piotroski ≥ 5 + composite ≥ 56"],
+    "most_contested_ratings": ["tickers where numeric gates contradict the given rating"],
     "data_quality_flags": ["tickers with suspicious or inconsistent metrics"]
   }}
 }}

@@ -469,7 +469,13 @@ def analyse_ticker(ticker: str) -> StockScore:
         # business quality is exceptional (upside gate relaxed for these).
         is_standard_sb    = cs >= 56 and up >= 30 and p >= 5
         is_fundamental_sb = cs >= 65 and p >= 7
-        if is_standard_sb or is_fundamental_sb:
+        if cs == 0 and p == 0:
+            # Zero composite + zero Piotroski = no positive signals at all.
+            # Must be Avoid regardless of any other gate — catches bankrupt/
+            # delisted stocks whose ratios produce cs=0 without triggering
+            # the data_quality="failed" path.
+            result.analyst_rating = "Avoid"
+        elif is_standard_sb or is_fundamental_sb:
             result.analyst_rating = "Strong Buy"
         elif cs < 43 or p <= 4:
             # Weak composite OR Piotroski ≤ 4 → absolute Hold.
