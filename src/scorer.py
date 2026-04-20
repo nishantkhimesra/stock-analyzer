@@ -253,6 +253,12 @@ def compute_scores(result: StockScore) -> StockScore:
 
     result.valuation_score = round(val_pts / val_cnt, 1) if val_cnt else 0.0
 
+    # Cap valuation score for financially distressed companies.
+    # Piotroski 0/9 means all 9 financial health signals are failing —
+    # post-bankruptcy fresh-start accounting inflates ratio-based scores.
+    if result.piotroski_score == 0:
+        result.valuation_score = min(result.valuation_score, 20.0)
+
     # ── Growth Score ─────────────────────────────────────────
     grw_pts = 0.0
     grw_cnt = 0
@@ -295,7 +301,13 @@ def compute_scores(result: StockScore) -> StockScore:
         elif ratio < 1.05:
             mom_pts += 40  # still at bottom — could mean value or value trap
         else:
-            mom_pts += 30  # very extended
+            # Very extended from 52w low. Penalise speculative pumps but reward
+            # confirmed fundamental uptrends (strong Piotroski + hyper-growth).
+            rev_g = result.revenue_growth_yoy or 0
+            if result.piotroski_score >= 7 and rev_g >= 0.50:
+                mom_pts += 75  # momentum confirmation for high-quality growers
+            else:
+                mom_pts += 30  # likely speculative or overextended
         mom_cnt += 1
 
     # 6-month price momentum
@@ -421,6 +433,17 @@ def analyse_ticker(ticker: str) -> StockScore:
         # Piotroski
         result.piotroski_score, result.piotroski_detail = compute_piotroski(stock)
 
+        # Hyper-growth context flag: low Piotroski on a fast-growing profitable
+        # company is often a measurement artefact (ROA lags during rapid capex
+        # expansion, accruals spike on deferred revenue). Flag it rather than
+        # penalising the stock as if it were financially distressed.
+        rev_growth = result.revenue_growth_yoy or 0
+        if (result.piotroski_score <= 5
+                and rev_growth >= 0.50
+                and result.operating_margin is not None
+                and result.operating_margin > 0):
+            result.piotroski_detail["_context"] = "hyper_growth"
+
         # Check data quality
         filled = sum([
             result.pe_ratio is not None,
@@ -440,7 +463,13 @@ def analyse_ticker(ticker: str) -> StockScore:
         up = result.upside_to_target if result.upside_to_target is not None else 0.0
         p  = result.piotroski_score
         cs = result.composite_score
-        if cs >= 56 and up >= 30 and p >= 5:
+        # Standard gate: composite ≥ 56, analyst upside ≥ 30%, Piotroski ≥ 5.
+        # Fundamental bypass: composite ≥ 65 + Piotroski ≥ 7 covers stocks
+        # like MU where the price already reflected the thesis but the underlying
+        # business quality is exceptional (upside gate relaxed for these).
+        is_standard_sb    = cs >= 56 and up >= 30 and p >= 5
+        is_fundamental_sb = cs >= 65 and p >= 7
+        if is_standard_sb or is_fundamental_sb:
             result.analyst_rating = "Strong Buy"
         elif cs < 43 or (p <= 4 and up < 20):
             # Weak composite OR bearish Piotroski with limited analyst upside → Hold.

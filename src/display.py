@@ -44,11 +44,12 @@ def score_bar(score: float, width: int = 10) -> str:
     return f"[{score_color(score)}]{bar}[/]"
 
 
-def piotroski_badge(score: int) -> str:
-    if score >= 7: return f"[bold bright_green]{score}/9 ▲[/bold bright_green]"
-    if score >= 5: return f"[yellow]{score}/9 ◆[/yellow]"
-    if score >= 3: return f"[orange1]{score}/9 ▼[/orange1]"
-    return f"[red]{score}/9 ✗[/red]"
+def piotroski_badge(score: int, detail: dict | None = None) -> str:
+    note = " [dim](growth artefact)[/dim]" if (detail or {}).get("_context") == "hyper_growth" else ""
+    if score >= 7: return f"[bold bright_green]{score}/9 ▲[/bold bright_green]{note}"
+    if score >= 5: return f"[yellow]{score}/9 ◆[/yellow]{note}"
+    if score >= 3: return f"[orange1]{score}/9 ▼[/orange1]{note}"
+    return f"[red]{score}/9 ✗[/red]{note}"
 
 
 def rating_badge(rating: str) -> str:
@@ -137,7 +138,7 @@ def results_table(results: list, top_n: int = None) -> Table:
             f"{score_bar(r.valuation_score, 6)} [{score_color(r.valuation_score)}]{r.valuation_score:.0f}[/]",
             f"{score_bar(r.growth_score, 6)} [{score_color(r.growth_score)}]{r.growth_score:.0f}[/]",
             f"{score_bar(r.momentum_score, 6)} [{score_color(r.momentum_score)}]{r.momentum_score:.0f}[/]",
-            piotroski_badge(r.piotroski_score),
+            piotroski_badge(r.piotroski_score, r.piotroski_detail),
             fmt(r.forward_pe, ".1f", "x") if r.forward_pe else fmt(r.pe_ratio, ".1f", "x"),
             fmt_pct(r.revenue_growth_yoy * 100 if r.revenue_growth_yoy else None),
             rsi_str,
@@ -191,7 +192,7 @@ def top_picks_panel(results: list, n: int = 5):
             f"[bold white]{r.company_name}[/bold white]\n"
             f"[dim]{r.industry}[/dim]\n\n"
             f"[bold]Composite Score:[/bold] [{score_color(r.composite_score)}]{r.composite_score:.0f}/100[/]\n"
-            f"[bold]Piotroski:[/bold]       {piotroski_badge(r.piotroski_score)}\n\n"
+            f"[bold]Piotroski:[/bold]       {piotroski_badge(r.piotroski_score, r.piotroski_detail)}\n\n"
             f"[bold]Price:[/bold]    ${r.current_price:.2f}\n"
             f"[bold]P/E:[/bold]      {pe_str}\n"
             f"[bold]Gross Margin:[/bold] {gm_str}\n"

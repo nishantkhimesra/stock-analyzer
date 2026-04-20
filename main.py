@@ -34,7 +34,7 @@ from src.display import (
 )
 
 
-MAX_WORKERS = 1   # sequential — avoids Yahoo Finance 429 rate limits
+MAX_WORKERS = 3   # 3 parallel workers, each with REQUEST_DELAY — ~3x faster without hitting rate limits
 DEFAULT_TOP = 10  # number of top picks to deep-dive
 
 

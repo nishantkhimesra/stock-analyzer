@@ -258,7 +258,10 @@ for r in valid[:picks_n]:
             st.metric("Rev Growth",    pct(r.revenue_growth_yoy))
             st.metric("RSI (14)",      f"{r.rsi_14:.0f}" if r.rsi_14 else "N/A")
             st.metric("MA Status",     ma_status(r))
-            st.metric("Piotroski",     f"{r.piotroski_score}/9")
+            is_hg = (r.piotroski_detail or {}).get("_context") == "hyper_growth"
+            p_label = f"{r.piotroski_score}/9" + (" ⚡" if is_hg else "")
+            p_help  = "Low score may reflect hyper-growth artefacts (ROA lag, deferred revenue accruals) — not financial distress." if is_hg else None
+            st.metric("Piotroski", p_label, help=p_help)
 
         with c3:
             st.markdown("**🎯 Analyst View**")
@@ -270,8 +273,10 @@ for r in valid[:picks_n]:
 
         # Piotroski detail
         if r.piotroski_detail:
+            if (r.piotroski_detail or {}).get("_context") == "hyper_growth":
+                st.info("⚡ **Growth artefact** — low Piotroski likely reflects ROA lag / accrual spikes from rapid expansion, not financial distress.")
             st.markdown("**Piotroski breakdown (top 5)**")
-            items = [(k, v) for k, v in r.piotroski_detail.items() if k != "error"][:5]
+            items = [(k, v) for k, v in r.piotroski_detail.items() if k not in ("error", "_context")][:5]
             p_cols = st.columns(len(items))
             for col, (k, v) in zip(p_cols, items):
                 label = k.replace("F", "").replace("_", " ").title()
