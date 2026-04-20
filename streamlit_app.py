@@ -14,6 +14,16 @@ try:
 except Exception:
     EVAL_AVAILABLE = False
 
+# ── Sync Streamlit Cloud secrets → os.environ ─────────────────────────────────
+# Streamlit Cloud injects secrets via st.secrets, not os.environ.
+# This one-time sync makes all existing os.environ.get() calls work unchanged.
+try:
+    for _k, _v in st.secrets.items():
+        if isinstance(_v, str):
+            os.environ.setdefault(_k, _v)
+except Exception:
+    pass  # local dev: no st.secrets, .env handles it via load_dotenv()
+
 # ── Page config ───────────────────────────────────────────────────────────────
 st.set_page_config(
     page_title="Stock Growth Potential Analyser",
