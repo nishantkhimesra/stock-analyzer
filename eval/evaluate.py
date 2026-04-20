@@ -104,15 +104,21 @@ RSI-14 (healthy range 40–65 = 80 pts, overbought/oversold penalised),
 **Piotroski F-Score** (0–9): 9 binary signals across profitability (F1–F4),
 leverage/liquidity (F5–F7), operating efficiency (F8–F9).
 
-**Rating Gates:**
-- Strong Buy: (composite ≥ 56 AND analyst upside ≥ 30% AND Piotroski ≥ 5)
-              OR (composite ≥ 65 AND Piotroski ≥ 7) [fundamental bypass for
-              stocks like MU where price already moved but quality is exceptional]
-- Hold gate:  composite < 43 OR Piotroski ≤ 4  (absolute floor — high upside does not override)
-- Buy:        composite ≥ 35 AND analyst upside ≥ 5%
-- Hold:       composite ≥ 20
-- Avoid:      composite < 20
+**Rating Gates (EXACT — do not invent stricter rules):**
+- Avoid first: composite == 0 AND Piotroski == 0 → Avoid (zero-signal stocks)
+- Strong Buy:  (composite ≥ 56 AND analyst_upside ≥ 30% AND Piotroski ≥ 5)  [standard]
+               OR (composite ≥ 65 AND Piotroski ≥ 7)                          [quality bypass]
+               OR (FCF yield > 8% AND Piotroski ≥ 5 AND composite ≥ 52)       [FCF bypass for
+               energy/REIT majors whose upside is structurally capped by dividends]
+- Hold gate:   composite < 43 OR Piotroski ≤ 4  (absolute floor — upside does NOT override)
+- Buy:         composite ≥ 35 AND analyst_upside ≥ 5%
+- Hold:        composite ≥ 20
+- Avoid:       composite < 20
 - Contrarian Strong Buy: Strong Buy by algo but Street consensus is Hold/Neutral
+
+**Critical:** The standard Strong Buy gate requires Piotroski ≥ 5, NOT ≥ 7.
+The p ≥ 7 threshold only applies to the quality bypass (composite ≥ 65 path).
+Do not apply the p ≥ 7 rule to stocks on the standard or FCF bypass path.
 
 **Known data limitations:**
 - Forward P/E from Yahoo is GAAP-based; non-GAAP guided EPS (common in software)
@@ -139,6 +145,19 @@ Below are the screening results for the **{sector}** sector.
 ---
 
 ## Validation Rules — follow these IN ORDER for every stock
+
+**Step 0 — Data quality gate (check this FIRST, before any numeric reasoning)**
+- Each stock has a `data_quality` field: `"full"`, `"partial"`, or `"failed"`.
+- `"partial"` means the price was available but several key metrics were missing
+  (e.g. no P/E, no revenue growth). Composite scores built on partial data are
+  unreliable — missing valuation inputs default to 0, deflating the score.
+- `"failed"` means no price was available at all. All scores are zero artefacts.
+- For any stock where `data_quality != "full"`, you MUST output:
+  - `"rating_suggested": "Insufficient data"`
+  - `"agreement": "partial"`
+  - `"confidence": "low"`
+  - `"notes": "data_quality=<value> — scores not reliable; rating withheld"`
+  Do NOT attempt to validate or disagree with a rating derived from partial/failed data.
 
 **Step 1 — Upside check (read the number, do not infer direction from narrative)**
 - `analyst_upside` is the % gap between current price and mean analyst price target.

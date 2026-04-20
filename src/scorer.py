@@ -363,6 +363,14 @@ def analyse_ticker(ticker: str) -> StockScore:
         result.industry = info.get("industry", "")
         result.current_price = info.get("currentPrice") or info.get("regularMarketPrice") or 0.0
 
+        # Fail fast: without a price none of the valuation or upside maths is
+        # valid. Mark failed and return immediately so compute_scores() never
+        # runs on zeroed data (prevents spurious Hold ratings like APA/WMB).
+        if not result.current_price:
+            result.data_quality = "failed"
+            result.error = "Price data unavailable (Yahoo returned no currentPrice)"
+            return result
+
         # Valuation multiples
         result.pe_ratio     = info.get("trailingPE")
         result.forward_pe   = info.get("forwardPE")  # Yahoo's GAAP-based estimate; may understate vs company non-GAAP guided EPS
@@ -469,13 +477,19 @@ def analyse_ticker(ticker: str) -> StockScore:
         # business quality is exceptional (upside gate relaxed for these).
         is_standard_sb    = cs >= 56 and up >= 30 and p >= 5
         is_fundamental_sb = cs >= 65 and p >= 7
+        # FCF-quality bypass: mature dividend payers (e.g. energy majors, REITs)
+        # generate exceptional free cash flow but rarely show 30% analyst upside
+        # because total return includes large dividends. If FCF yield > 8%,
+        # Piotroski ≥ 5, and composite ≥ 52, award Strong Buy regardless of upside.
+        fcf_y = result.fcf_yield or 0.0
+        is_fcf_quality_sb = fcf_y > 8.0 and p >= 5 and cs >= 52
         if cs == 0 and p == 0:
             # Zero composite + zero Piotroski = no positive signals at all.
             # Must be Avoid regardless of any other gate — catches bankrupt/
             # delisted stocks whose ratios produce cs=0 without triggering
             # the data_quality="failed" path.
             result.analyst_rating = "Avoid"
-        elif is_standard_sb or is_fundamental_sb:
+        elif is_standard_sb or is_fundamental_sb or is_fcf_quality_sb:
             result.analyst_rating = "Strong Buy"
         elif cs < 43 or p <= 4:
             # Weak composite OR Piotroski ≤ 4 → absolute Hold.
