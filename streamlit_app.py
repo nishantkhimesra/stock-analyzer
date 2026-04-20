@@ -270,6 +270,12 @@ for r in valid[:picks_n]:
             st.metric("Street consensus", r.yahoo_consensus or "N/A")
             if "contrarian" in rl:
                 st.warning("⚡ Algo says Strong Buy — Street says Hold/Neutral.")
+            if r.analyst_rating == "Hold" and (r.upside_to_target or 0) >= 60:
+                st.warning(
+                    f"⚠️ High Street upside ({r.upside_to_target:.0f}%) but algo holds — "
+                    f"composite {r.composite_score:.0f}/100 and Piotroski {r.piotroski_score}/9 "
+                    "are below the Buy threshold. Upside alone doesn't justify a Buy."
+                )
 
         # Piotroski detail
         if r.piotroski_detail:

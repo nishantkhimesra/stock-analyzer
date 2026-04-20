@@ -206,13 +206,13 @@ def render_report(results: list[StockScore], validation: dict, sector_key: str):
     stock_vals = {v["ticker"]: v for v in validation.get("stock_validations", [])}
 
     console.print()
-    console.print(Rule(f"[bold white] Claude Validation Report — {sector_name} [/bold white]", style="cyan"))
+    console.print(Rule(f"[bold white] OpenAI Validation Report — {sector_name} [/bold white]", style="cyan"))
 
     # ── Per-stock table ───────────────────────────────────────────────────────
     table = Table(box=box.SIMPLE_HEAVY, header_style="bold cyan", show_lines=False, padding=(0, 1))
     table.add_column("Ticker",      style="bold white",  width=7)
     table.add_column("Algo Rating", width=22)
-    table.add_column("Claude Says", width=22)
+    table.add_column("OpenAI Says", width=22)
     table.add_column("Agreement",   width=10)
     table.add_column("Confidence",  width=10)
     table.add_column("Notes",       width=52, no_wrap=False)

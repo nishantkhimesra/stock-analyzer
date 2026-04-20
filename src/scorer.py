@@ -471,10 +471,12 @@ def analyse_ticker(ticker: str) -> StockScore:
         is_fundamental_sb = cs >= 65 and p >= 7
         if is_standard_sb or is_fundamental_sb:
             result.analyst_rating = "Strong Buy"
-        elif cs < 43 or (p <= 4 and up < 20):
-            # Weak composite OR bearish Piotroski with limited analyst upside → Hold.
-            # Prevents low-quality stocks (e.g. NET 136x P/E, 4/9 Piotroski) from
-            # being labelled Buy simply because composite ≥ 35.
+        elif cs < 43 or p <= 4:
+            # Weak composite OR Piotroski ≤ 4 → absolute Hold.
+            # Piotroski ≤ 4 means at least 5 of 9 financial health signals are
+            # failing. High analyst upside does NOT override this floor — that
+            # would recreate the upside-driven bias the gate was designed to prevent
+            # (e.g. S: 4/9 Piotroski, 31% upside should be Hold, not Buy).
             result.analyst_rating = "Hold"
         elif cs >= 35 and up >= 5:
             result.analyst_rating = "Buy"

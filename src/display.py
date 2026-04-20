@@ -203,7 +203,16 @@ def top_picks_panel(results: list, n: int = 5):
             f"[bold]Analyst PT:[/bold] " +
             (f"[bold bright_green]${r.analyst_target:.2f}[/bold bright_green] ({fmt_pct(r.upside_to_target)})\n"
              if r.analyst_target else "[dim]N/A[/dim]\n") +
-            f"[bold]Rating:[/bold]    {rating_badge(r.analyst_rating)}\n\n"
+            f"[bold]Rating:[/bold]    {rating_badge(r.analyst_rating)}\n" +
+            (
+                "[dim yellow]⚠ High Street upside held back by weak\n"
+                f"  Piotroski ({r.piotroski_score}/9) or low composite\n"
+                f"  ({r.composite_score:.0f}/100) — upside alone doesn't\n"
+                "  justify a Buy.[/dim yellow]\n\n"
+                if r.analyst_rating == "Hold"
+                and (r.upside_to_target or 0) >= 60
+                else "\n"
+            ) +
             f"[dim]— Piotroski detail (top 5) —[/dim]\n{p_text}"
         )
 
