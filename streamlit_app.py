@@ -11,7 +11,9 @@ from config.dynamic_fetch import fetch_sector_tickers
 from src.scorer import analyse_ticker
 
 try:
-    from eval.evaluate import call_openai, is_azure, opinion_model, DEFAULT_MODEL
+    from eval.evaluate import (
+        call_openai, call_review_agent, is_azure, opinion_model, DEFAULT_MODEL
+    )
     EVAL_AVAILABLE = True
 except Exception:
     EVAL_AVAILABLE = False
@@ -291,7 +293,8 @@ if run_btn or st.session_state.get("scan_sector") != sector_key:
     _res.sort(key=lambda r: (r.data_quality == "failed", -r.composite_score))
     st.session_state["results"]     = _res
     st.session_state["scan_sector"] = sector_key
-    st.session_state.pop("validation", None)  # clear stale validation on new scan
+    st.session_state.pop("validation", None)   # clear stale validation on new scan
+    st.session_state.pop("review_agent", None)  # clear stale review on new scan
 
 results = st.session_state["results"]
 valid   = [r for r in results if r.data_quality != "failed"]
@@ -551,6 +554,137 @@ if (
     ]
     if disagreements:
         st.warning(f"AI disagrees on: {', '.join(disagreements)}")
+
+    # ── Review with AI ────────────────────────────────────────────────────────
+    st.divider()
+    _STRONG_BUY_LABELS = {"Strong Buy", "Contrarian Strong Buy"}
+    _review_candidates = [
+        r for r in valid
+        if r.analyst_rating in _STRONG_BUY_LABELS
+        and stock_vals.get(r.ticker, {}).get("confidence") == "high"
+        and stock_vals.get(r.ticker, {}).get("agreement") == "agree"
+    ][:3]
+
+    ra_left, ra_right = st.columns([4, 1])
+    with ra_left:
+        st.subheader("🔬 Review with AI")
+        if _review_candidates:
+            _names = ", ".join(
+                f"**{r.ticker}**" for r in _review_candidates
+            )
+            st.caption(
+                f"Deep-dives on {_names} — top Strong Buy picks with high "
+                "AI validation confidence. Searches recent news and provides "
+                "a buy/caution/avoid verdict with reasoning."
+            )
+        else:
+            st.caption(
+                "No Strong Buy stocks with high AI confidence found in this run. "
+                "Run a sector scan and validation to unlock this feature."
+            )
+    with ra_right:
+        review_btn = st.button(
+            "🔬 Review with AI",
+            type="primary",
+            use_container_width=True,
+            disabled=(not _review_candidates or not EVAL_AVAILABLE),
+        )
+
+    if review_btn and _review_candidates and EVAL_AVAILABLE:
+        _candidates_payload = [
+            {
+                "ticker":          r.ticker,
+                "company":         r.company_name,
+                "algo_rating":     r.analyst_rating,
+                "composite_score": round(r.composite_score, 1),
+                "piotroski":       r.piotroski_score,
+                "analyst_upside":  f"{r.upside_to_target:.1f}%"
+                                   if r.upside_to_target else None,
+                "analyst_pt":      round(r.analyst_target, 2)
+                                   if r.analyst_target else None,
+                "fwd_pe":          round(r.forward_pe, 1)
+                                   if r.forward_pe else None,
+                "revenue_growth":  f"{r.revenue_growth_yoy*100:.1f}%"
+                                   if r.revenue_growth_yoy else None,
+                "gross_margin":    f"{r.gross_margin*100:.1f}%"
+                                   if r.gross_margin else None,
+                "roe":             f"{r.roe*100:.1f}%"
+                                   if r.roe else None,
+                "rsi_14":          round(r.rsi_14, 0) if r.rsi_14 else None,
+                "yahoo_consensus": r.yahoo_consensus or "N/A",
+                "ai_validation_notes": stock_vals.get(
+                    r.ticker, {}).get("notes", ""),
+            }
+            for r in _review_candidates
+        ]
+        with st.spinner(
+            "🔬 Research agent searching news and analysing candidates "
+            "— this takes ~20-40 s…"
+        ):
+            try:
+                _review = call_review_agent(_candidates_payload)
+                st.session_state["review_agent"]        = _review
+                st.session_state["review_agent_sector"] = sector_key
+            except Exception as _re:
+                st.session_state["review_agent_error"] = str(_re)
+        st.rerun()
+
+    if "review_agent_error" in st.session_state:
+        st.error(
+            f"Review agent failed: {st.session_state.pop('review_agent_error')}"
+        )
+
+    if (
+        "review_agent" in st.session_state
+        and st.session_state.get("review_agent_sector") == sector_key
+        and not review_btn
+    ):
+        _review = st.session_state["review_agent"]
+        _verdict_style = {
+            "Confirm Buy":          ("✅", "#1a7a4a", "#d4edda"),
+            "Proceed with Caution": ("⚠️", "#856404", "#fff3cd"),
+            "Avoid for Now":        ("❌", "#721c24", "#f8d7da"),
+        }
+        if _review.get("agent_summary"):
+            st.info(f"📋 {_review['agent_summary']}")
+        for rev in _review.get("reviews", []):
+            icon, fg, bg = _verdict_style.get(
+                rev.get("verdict", ""), ("ℹ️", "#333", "#f0f0f0")
+            )
+            with st.expander(
+                f"{icon}  **{rev['ticker']}** — {rev.get('company', '')}  "
+                f"│  {rev.get('verdict', '')}",
+                expanded=True,
+            ):
+                st.markdown(
+                    f"<div style='"
+                    f"background:{bg};border-left:4px solid {fg};"
+                    f"padding:10px 14px;border-radius:4px;margin-bottom:8px'>"
+                    f"<b>{icon} {rev.get('verdict','')}</b> &nbsp;"
+                    f"<span style='color:{fg}'>"
+                    f"Confidence: {rev.get('confidence','').upper()}"
+                    f"</span></div>",
+                    unsafe_allow_html=True,
+                )
+                if rev.get("news_summary"):
+                    st.markdown(
+                        f"**📰 Recent News:** {rev['news_summary']}"
+                    )
+                rc1, rc2 = st.columns(2)
+                with rc1:
+                    if rev.get("key_catalysts"):
+                        st.markdown("**🚀 Key Catalysts**")
+                        for c in rev["key_catalysts"]:
+                            st.markdown(f"- {c}")
+                with rc2:
+                    if rev.get("key_risks"):
+                        st.markdown("**⚠️ Key Risks**")
+                        for r_ in rev["key_risks"]:
+                            st.markdown(f"- {r_}")
+                if rev.get("reasoning"):
+                    st.markdown(
+                        f"**💬 Reasoning:** {rev['reasoning']}"
+                    )
 
 # ── Download report ───────────────────────────────────────────────────────────
 if "results" in st.session_state and st.session_state.get("scan_sector") == sector_key:

@@ -365,6 +365,52 @@ Respond with ONLY valid JSON (no markdown fences, no preamble). Schema:
 """
 
 
+REVIEW_AGENT_PROMPT = """
+You are an expert stock research agent performing final due-diligence before a
+buy decision. The candidates below have already passed a quantitative screen
+(composite score, Piotroski F-Score, analyst upside) and were independently
+validated by an AI logic checker with HIGH confidence.
+
+## Candidate Stocks
+
+```json
+{candidates_json}
+```
+
+## Your Task
+
+For EACH stock:
+1. **Search for recent news** (past 2–4 weeks) — earnings, guidance updates,
+   management commentary, analyst upgrades/downgrades, sector events.
+2. **Identify 2–3 key catalysts** that could drive the price higher.
+3. **Identify 2–3 key risks** — red flags, competitive threats, macro headwinds,
+   or negative developments the quantitative model may not have captured.
+4. **Give a verdict** (pick exactly one):
+   - `"Confirm Buy"` — recent news is consistent with the bullish algo case
+   - `"Proceed with Caution"` — the algo case holds but notable risks exist
+   - `"Avoid for Now"` — recent news materially contradicts the bullish rating
+
+## Output
+
+Respond with ONLY valid JSON (no markdown fences, no preamble). Schema:
+{{
+  "reviews": [
+    {{
+      "ticker": "AAPL",
+      "company": "Apple Inc.",
+      "verdict": "Confirm Buy",
+      "confidence": "high|medium|low",
+      "news_summary": "1-2 sentence summary of the most relevant recent news",
+      "key_catalysts": ["catalyst 1", "catalyst 2"],
+      "key_risks": ["risk 1", "risk 2"],
+      "reasoning": "2-3 sentences explaining the verdict, citing specific news or data points found"
+    }}
+  ],
+  "agent_summary": "2-3 sentence overall summary of the review across all candidates"
+}}
+"""
+
+
 def serialise_result(r: StockScore) -> dict:
     """Convert a StockScore to a compact dict for the opinion prompt."""
     return {
@@ -525,6 +571,79 @@ def call_openai_grounded(results: list[StockScore], top_n: int = 8) -> dict:
             )
         except Exception as e:
             if "404" in str(e) or "not found" in str(e).lower():
+                console.print(
+                    f"[red]Error:[/red] Model '{GROUNDED_MODEL}' not found. "
+                    "Verify at: https://platform.openai.com/account/rate-limits"
+                )
+                sys.exit(1)
+            raise
+
+    raw = response.choices[0].message.content.strip()
+    if raw.startswith("```"):
+        raw = raw.split("```")[1]
+        if raw.startswith("json"):
+            raw = raw[4:]
+
+    return json.loads(raw)
+
+
+def call_review_agent(candidates: list[dict]) -> dict:
+    """Deep-dive research agent for top Strong Buy candidates.
+
+    Searches for recent news and returns a buy/caution/avoid verdict per stock.
+    Azure: uses configured deployment + Bing if BING_SEARCH_KEY is set.
+    OpenAI: uses gpt-4o-mini-search-preview.
+    """
+    client = build_client()
+    prompt = REVIEW_AGENT_PROMPT.format(
+        candidates_json=json.dumps(candidates, indent=2)
+    )
+
+    if is_azure():
+        model    = os.environ.get("AZURE_OPENAI_DEPLOYMENT", "gpt-4o-mini")
+        bing_key = os.environ.get("BING_SEARCH_KEY")
+        bing_ep  = os.environ.get(
+            "BING_SEARCH_ENDPOINT", "https://api.bing.microsoft.com/"
+        )
+        extra: dict = {}
+        if bing_key:
+            console.print(
+                f"\n[dim]Calling Azure ({model} + Bing) for review agent…[/dim]"
+            )
+            extra = {
+                "extra_body": {
+                    "data_sources": [{
+                        "type": "bing_search",
+                        "parameters": {
+                            "endpoint": bing_ep,
+                            "key": bing_key,
+                            "search_top_n": 5,
+                        },
+                    }]
+                }
+            }
+        else:
+            console.print(
+                f"\n[dim]Calling Azure ({model}, no Bing key) for review agent…[/dim]"
+            )
+        response = client.chat.completions.create(
+            model=model,
+            max_tokens=4096,
+            messages=[{"role": "user", "content": prompt}],
+            **extra,
+        )
+    else:
+        console.print(
+            f"\n[dim]Calling OpenAI ({GROUNDED_MODEL}) for review agent…[/dim]"
+        )
+        try:
+            response = client.chat.completions.create(
+                model=GROUNDED_MODEL,
+                max_tokens=4096,
+                messages=[{"role": "user", "content": prompt}],
+            )
+        except Exception as exc:
+            if "model_not_found" in str(exc):
                 console.print(
                     f"[red]Error:[/red] Model '{GROUNDED_MODEL}' not found. "
                     "Verify at: https://platform.openai.com/account/rate-limits"
