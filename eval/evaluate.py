@@ -25,6 +25,7 @@ import json
 import argparse
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import requests
+from ddgs import DDGS
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -591,34 +592,25 @@ def is_rapidapi_bing() -> bool:
     return "rapidapi" in os.environ.get("BING_SEARCH_ENDPOINT", "").lower()
 
 
-def fetch_bing_news(query: str, count: int = 5) -> list[dict]:
-    """Fetch news snippets from RapidAPI Bing Web Search."""
-    key      = os.environ.get("BING_SEARCH_KEY", "")
-    endpoint = os.environ.get("BING_SEARCH_ENDPOINT", "").rstrip("/")
+def fetch_news(query: str, count: int = 5) -> list[dict]:
+    """Fetch recent news via DuckDuckGo (no API key required)."""
     try:
-        resp = requests.get(
-            f"{endpoint}/search",
-            headers={
-                "X-RapidAPI-Key":  key,
-                "X-RapidAPI-Host": "bing-web-search1.p.rapidapi.com",
-            },
-            params={"q": query, "count": count, "freshness": "Week", "textFormat": "Raw"},
-            timeout=10,
-        )
-        resp.raise_for_status()
-        pages = resp.json().get("webPages", {}).get("value", [])
-        return [{"title": p["name"], "snippet": p["snippet"], "url": p["url"]} for p in pages]
+        results = list(DDGS().news(query, max_results=count, timelimit="w"))
+        return [
+            {"title": r["title"], "snippet": r["body"], "url": r["url"]}
+            for r in results
+        ]
     except Exception as e:
-        console.print(f"[yellow]Bing search for '{query}' failed: {e}[/yellow]")
+        console.print(f"[yellow]News search for '{query}' failed: {e}[/yellow]")
         return []
 
 
 def build_news_context(candidates: list[dict]) -> str:
-    """Fetch recent news for each candidate and format as prompt context."""
+    """Fetch recent news for each candidate (DuckDuckGo) and format as prompt context."""
     sep = "─" * 77
     lines = [
         f"\n{sep}",
-        "PRE-FETCHED NEWS CONTEXT (Bing Search — last 7 days)",
+        "PRE-FETCHED NEWS CONTEXT (DuckDuckGo — last 7 days)",
         "Use these results for news_summary, key_catalysts, and key_risks.",
         "Cite sources with hedged attribution: 'According to [source], ...'",
         f"{sep}\n",
@@ -626,7 +618,7 @@ def build_news_context(candidates: list[dict]) -> str:
     for c in candidates:
         ticker  = c.get("ticker", "")
         company = c.get("company", ticker)
-        results = fetch_bing_news(f"{ticker} {company} stock news earnings", count=5)
+        results = fetch_news(f"{ticker} {company} stock news earnings", count=5)
         lines.append(f"### {ticker} — {company}")
         if results:
             for r in results:
@@ -634,7 +626,7 @@ def build_news_context(candidates: list[dict]) -> str:
                 lines.append(f"    {r['snippet']}")
                 lines.append(f"    Source: {r['url']}")
         else:
-            lines.append("  No recent news found via Bing search.")
+            lines.append("  No recent news found via search.")
         lines.append("")
     return "\n".join(lines)
 
@@ -798,48 +790,20 @@ def call_review_agent(candidates: list[dict]) -> dict:
     )
 
     if is_azure():
-        model    = os.environ.get("AZURE_OPENAI_DEPLOYMENT", "gpt-4o-mini")
-        bing_key = os.environ.get("BING_SEARCH_KEY")
-        bing_ep  = os.environ.get(
-            "BING_SEARCH_ENDPOINT", "https://api.bing.microsoft.com/"
-        )
+        model = os.environ.get("AZURE_OPENAI_DEPLOYMENT", "gpt-4o-mini")
         extra: dict = {}
-        if bing_key and is_rapidapi_bing():
-            # RapidAPI Bing: fetch news ourselves and inject into prompt.
-            # Azure OpenAI data_sources only accepts official Azure Bing resources.
-            console.print(
-                f"\n[dim]Fetching Bing news via RapidAPI for "
-                f"{len(candidates)} candidate(s)…[/dim]"
-            )
-            news_ctx = build_news_context(candidates)
-            prompt   = prompt + news_ctx
-            console.print(
-                f"[dim]Calling Azure ({model} + RapidAPI news context) for review agent…[/dim]"
-            )
-        elif bing_key:
-            # Official Azure Bing Search resource — use native data_sources grounding.
-            console.print(
-                f"\n[dim]Calling Azure ({model} + Bing grounding) for review agent…[/dim]"
-            )
-            extra = {
-                "extra_body": {
-                    "data_sources": [{
-                        "type": "bing_search",
-                        "parameters": {
-                            "endpoint": bing_ep,
-                            "key": bing_key,
-                            "search_top_n": 5,
-                        },
-                    }]
-                }
-            }
-        else:
-            console.print(
-                f"\n[yellow]⚠  BING_SEARCH_KEY not set — review agent will use model knowledge "
-                f"only (no live web search). Recent news will NOT be available.\n"
-                f"   Set BING_SEARCH_KEY in .env to enable real news research.[/yellow]\n"
-                f"[dim]Calling Azure ({model}, no web search) for review agent…[/dim]"
-            )
+        # Fetch news via DuckDuckGo and inject into prompt.
+        # Azure OpenAI data_sources grounding only works with official Azure Bing
+        # resources, not RapidAPI or other providers.
+        console.print(
+            f"\n[dim]Fetching news via DuckDuckGo for "
+            f"{len(candidates)} candidate(s)…[/dim]"
+        )
+        news_ctx = build_news_context(candidates)
+        prompt   = prompt + news_ctx
+        console.print(
+            f"[dim]Calling Azure ({model} + DuckDuckGo news) for review agent…[/dim]"
+        )
         response = client.chat.completions.create(
             model=model,
             max_tokens=4096,
