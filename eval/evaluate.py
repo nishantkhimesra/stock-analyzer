@@ -24,6 +24,7 @@ import re
 import json
 import argparse
 from concurrent.futures import ThreadPoolExecutor, as_completed
+import requests
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -585,6 +586,59 @@ def extract_json(raw: str) -> str:
     return raw
 
 
+def is_rapidapi_bing() -> bool:
+    """True when the configured Bing endpoint is RapidAPI rather than Azure native."""
+    return "rapidapi" in os.environ.get("BING_SEARCH_ENDPOINT", "").lower()
+
+
+def fetch_bing_news(query: str, count: int = 5) -> list[dict]:
+    """Fetch news snippets from RapidAPI Bing Web Search."""
+    key      = os.environ.get("BING_SEARCH_KEY", "")
+    endpoint = os.environ.get("BING_SEARCH_ENDPOINT", "").rstrip("/")
+    try:
+        resp = requests.get(
+            f"{endpoint}/search",
+            headers={
+                "X-RapidAPI-Key":  key,
+                "X-RapidAPI-Host": "bing-web-search1.p.rapidapi.com",
+            },
+            params={"q": query, "count": count, "freshness": "Week", "textFormat": "Raw"},
+            timeout=10,
+        )
+        resp.raise_for_status()
+        pages = resp.json().get("webPages", {}).get("value", [])
+        return [{"title": p["name"], "snippet": p["snippet"], "url": p["url"]} for p in pages]
+    except Exception as e:
+        console.print(f"[yellow]Bing search for '{query}' failed: {e}[/yellow]")
+        return []
+
+
+def build_news_context(candidates: list[dict]) -> str:
+    """Fetch recent news for each candidate and format as prompt context."""
+    sep = "─" * 77
+    lines = [
+        f"\n{sep}",
+        "PRE-FETCHED NEWS CONTEXT (Bing Search — last 7 days)",
+        "Use these results for news_summary, key_catalysts, and key_risks.",
+        "Cite sources with hedged attribution: 'According to [source], ...'",
+        f"{sep}\n",
+    ]
+    for c in candidates:
+        ticker  = c.get("ticker", "")
+        company = c.get("company", ticker)
+        results = fetch_bing_news(f"{ticker} {company} stock news earnings", count=5)
+        lines.append(f"### {ticker} — {company}")
+        if results:
+            for r in results:
+                lines.append(f"  • {r['title']}")
+                lines.append(f"    {r['snippet']}")
+                lines.append(f"    Source: {r['url']}")
+        else:
+            lines.append("  No recent news found via Bing search.")
+        lines.append("")
+    return "\n".join(lines)
+
+
 def run_analysis(sector_key: str, live: bool = False) -> list[StockScore]:
     if live:
         tickers, source = fetch_sector_tickers(sector_key)
@@ -750,9 +804,22 @@ def call_review_agent(candidates: list[dict]) -> dict:
             "BING_SEARCH_ENDPOINT", "https://api.bing.microsoft.com/"
         )
         extra: dict = {}
-        if bing_key:
+        if bing_key and is_rapidapi_bing():
+            # RapidAPI Bing: fetch news ourselves and inject into prompt.
+            # Azure OpenAI data_sources only accepts official Azure Bing resources.
             console.print(
-                f"\n[dim]Calling Azure ({model} + Bing) for review agent…[/dim]"
+                f"\n[dim]Fetching Bing news via RapidAPI for "
+                f"{len(candidates)} candidate(s)…[/dim]"
+            )
+            news_ctx = build_news_context(candidates)
+            prompt   = prompt + news_ctx
+            console.print(
+                f"[dim]Calling Azure ({model} + RapidAPI news context) for review agent…[/dim]"
+            )
+        elif bing_key:
+            # Official Azure Bing Search resource — use native data_sources grounding.
+            console.print(
+                f"\n[dim]Calling Azure ({model} + Bing grounding) for review agent…[/dim]"
             )
             extra = {
                 "extra_body": {
