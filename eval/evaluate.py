@@ -509,7 +509,14 @@ Also read `ai_validation_agreement` and `ai_validation_concerns` from the JSON:
 
 **Step 2 — News research (STOCK-SPECIFIC events only)**
 
-Search for news published in the LAST 4 WEEKS for this specific stock:
+Read the PRE-FETCHED NEWS CONTEXT section at the bottom of this prompt.
+It contains Bing/DuckDuckGo search results from the LAST 4 WEEKS for each ticker.
+Do NOT say you cannot search — the search results are already provided below.
+If the pre-fetched context contains results for this ticker, use them.
+If the pre-fetched context says "No recent news found" for this ticker,
+write news_summary as "No material news found in search window."
+
+Extract from the pre-fetched context:
   - Earnings results or guidance updates
   - New product launches, pipeline approvals, contract wins
   - Management changes or major strategic announcements
@@ -562,6 +569,10 @@ Sector-level concerns alone NEVER justify "Avoid for Now".
 "Contrarian" label alone NEVER justifies "Proceed with Caution".
 Zero or near-zero analyst upside alone NEVER justifies "Proceed with Caution"
 on a ▲ STRONG baseline (Path A and Path C do not require upside).
+"No material news found" alone NEVER justifies "Proceed with Caution" on a
+▲ STRONG baseline. The absence of negative news confirms the baseline holds.
+  Wrong: verdict="Proceed with Caution", reasoning="lack of recent news creates uncertainty"
+  Correct: verdict="Confirm Buy" with confidence=medium when no news found on STRONG baseline.
 
 **Step 4 — Confidence**
   high   — found specific recent news AND quant baseline is ▲ STRONG
@@ -638,7 +649,7 @@ def is_rapidapi_bing() -> bool:
 def fetch_news(query: str, count: int = 5) -> list[dict]:
     """Fetch recent news via DuckDuckGo (no API key required)."""
     try:
-        results = list(DDGS().news(query, max_results=count, timelimit="w"))
+        results = list(DDGS().news(query, max_results=count, timelimit="m"))
         return [
             {"title": r["title"], "snippet": r["body"], "url": r["url"]}
             for r in results
