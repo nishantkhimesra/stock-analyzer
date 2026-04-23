@@ -365,7 +365,7 @@ python eval/evaluate.py --sector tech --mode opinion --save  # saves JSON to dis
 
 ## Review with AI
 
-After running AI Validation, click **🔬 Review with AI** to launch a research agent that performs a final due-diligence pass on the strongest picks.
+After running AI Validation, click **🔬 Review with AI** to launch a research agent that performs a final due-diligence pass on the strongest picks. The agent is designed to be quantitatively anchored — it derives a baseline verdict from the numbers first and only deviates from it for concrete, stock-specific news.
 
 ### How candidates are selected
 
@@ -379,24 +379,67 @@ Up to 3 candidates are selected (sorted by composite score, highest first).
 
 ### What the agent does
 
-For each candidate the agent:
+The agent follows a **fixed four-step process** for every candidate:
 
-1. **Searches for recent news** (past 2–4 weeks) — earnings results, guidance updates, management commentary, analyst upgrades/downgrades, sector headwinds or tailwinds
-2. **Identifies 2–3 key catalysts** that could drive the price higher in the near term
-3. **Identifies 2–3 key risks** — competitive threats, macro headwinds, or negative developments the quantitative model cannot capture
-4. **Delivers a verdict** (see below) with a written reasoning paragraph citing specific news or data points
+**Step 1 — Quantitative baseline (mandatory first)**
 
-On Azure OpenAI, the agent uses **Bing Search grounding** if `BING_SEARCH_KEY` is set in the environment, enabling live web retrieval. On direct OpenAI, `gpt-4o-mini-search-preview` (which has built-in web search) is used automatically.
+The agent reads `composite_score`, `piotroski`, `analyst_upside`, and `fwd_pe` verbatim from the data and classifies the stock:
+
+| Classification | Criteria |
+|---|---|
+| ▲ **STRONG** | composite ≥ 65 AND piotroski ≥ 7 (Path A) — OR — composite ≥ 56 AND piotroski ≥ 5 AND upside ≥ 30% (Path B) |
+| ◆ **MODERATE** | composite 43–55 AND piotroski 5–6 AND upside ≥ 5% |
+| ▼ **WEAK** | anything else — flagged as unexpected for a review candidate |
+
+The agent also reads the `ai_validation_notes` and `ai_validation_concerns` passed from the validation run and explicitly addresses any flags raised there.
+
+**Step 2 — Stock-specific news research**
+
+The agent searches for news published in the **last 4 weeks** for that specific stock: earnings results, guidance updates, pipeline approvals, analyst upgrades/downgrades, management changes, or macro events that affect this company specifically.
+
+Generic sector-wide risks — "patent expirations", "increased competition", "regulatory hurdles" — are **prohibited** as key risks unless a concrete recent event ties them to this specific stock. Every news item cited uses hedged attribution ("According to [source]…" or "Recent reports indicate…"). If nothing relevant is found, the agent states it explicitly and falls back to the quantitative baseline.
+
+**Step 3 — Verdict determination**
+
+The verdict starts from the quantitative baseline and only deviates for concrete evidence:
+
+| Quant baseline | News signal | Verdict |
+|---|---|---|
+| ▲ STRONG | Neutral or positive | ✅ Confirm Buy |
+| ▲ STRONG | One specific near-term risk | ⚠️ Proceed with Caution |
+| ◆ MODERATE | Positive news | ✅ Confirm Buy |
+| ◆ MODERATE | Neutral or no news | ⚠️ Proceed with Caution |
+| Any | Concrete hard negative event | ❌ Avoid for Now |
+
+**"Avoid for Now" requires a concrete hard event:** earnings miss + guidance cut, fraud allegation, insolvency signal, product recall, or major contract loss. Sector-level concerns alone never justify it. The "Contrarian" label on its own never justifies "Proceed with Caution" — see below.
+
+**Step 4 — Confidence calibration**
+
+| Confidence | Meaning |
+|---|---|
+| `high` | Specific recent news found + quant baseline is unambiguous (▲ STRONG) |
+| `medium` | News inconclusive, or quant baseline is ◆ MODERATE, or concerns noted |
+| `low` | No recent news found — verdict based on quant data alone |
+
+### Understanding "Contrarian Strong Buy"
+
+A **Contrarian Strong Buy** means the quantitative model scores the stock as Strong Buy on fundamentals (high composite + Piotroski ≥ 7), but Wall Street consensus is bearish or neutral. The "Contrarian" label captures Street divergence — it is **not a warning**. The agent is explicitly instructed that a stock with composite ≥ 65 and Piotroski = 9 is quantitatively exceptional and should default to "Confirm Buy" unless specific negative news overrides that.
 
 ### Verdicts
 
 | Verdict | Meaning | UI colour |
 |---|---|---|
-| ✅ **Confirm Buy** | Recent news is consistent with the bullish algo case | Green |
-| ⚠️ **Proceed with Caution** | The algo case holds but notable near-term risks exist | Amber |
-| ❌ **Avoid for Now** | Recent news materially contradicts the bullish rating | Red |
+| ✅ **Confirm Buy** | Quant baseline is strong; news is neutral-to-positive | Green |
+| ⚠️ **Proceed with Caution** | Quant case holds but a specific near-term risk was found, or baseline is only MODERATE | Amber |
+| ❌ **Avoid for Now** | A concrete hard negative event contradicts the bullish rating | Red |
 
-The verdict card shows: news summary · key catalysts · key risks · reasoning.
+### What each verdict card shows
+
+Each card displays (in order): **quant baseline** (the verbatim numeric anchor) · **recent news summary** with source attribution · **key catalysts** · **key risks** · **reasoning** (must cite ≥ 2 numbers from the data and specific news found).
+
+### Web search capability
+
+On Azure OpenAI, the agent uses **Bing Search grounding** if `BING_SEARCH_KEY` is set, enabling live web retrieval. On direct OpenAI, `gpt-4o-mini-search-preview` (built-in web search) is used automatically. Without a search key on Azure, the agent falls back to model knowledge with reduced recency.
 
 > **Note:** The Review with AI agent is an informational tool, not a trading signal. It relies on news available at the time of the run and can miss important context. Always conduct independent research before any investment decision.
 
