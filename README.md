@@ -24,10 +24,14 @@ Select a sector, get a ranked list scored on Piotroski F-Score, valuation multip
    - [What it checks](#what-it-checks)
    - [Validation rules](#validation-rules)
    - [Azure OpenAI setup](#azure-openai-setup)
-6. [Download Report](#download-report)
-7. [CLI Mode](#cli-mode)
-8. [Known Data Limitations](#known-data-limitations)
-9. [Disclaimer](#disclaimer)
+6. [Review with AI](#review-with-ai)
+   - [How candidates are selected](#how-candidates-are-selected)
+   - [What the agent does](#what-the-agent-does)
+   - [Verdicts](#verdicts)
+7. [Download Report](#download-report)
+8. [CLI Mode](#cli-mode)
+9. [Known Data Limitations](#known-data-limitations)
+10. [Disclaimer](#disclaimer)
 
 ---
 
@@ -47,7 +51,9 @@ The primary interface is a **Streamlit dashboard** with three phases:
 
 3. **AI Validation** — after a scan, click **▶ Run Validation** to call an LLM (Azure OpenAI or OpenAI) that independently reviews every rating against the numeric data, flags disagreements, and produces an overall sector assessment.
 
-All scan and validation results are cached in `st.session_state` — switching tabs or adjusting the deep-dive slider does **not** re-fetch data. Running a new sector scan clears the previous validation automatically.
+4. **Review with AI** — after validation, click **🔬 Review with AI** to send the top Strong Buy picks (with high AI validation confidence) to a research agent that searches for recent news, identifies catalysts and risks, and delivers a buy/caution/avoid verdict with written reasoning.
+
+All scan, validation, and review results are cached in `st.session_state` — switching tabs or adjusting the deep-dive slider does **not** re-fetch data. Running a new sector scan clears the previous validation and review automatically.
 
 ### CLI Mode
 
@@ -71,9 +77,11 @@ stock-analyzer/
 │                               results_table(), top_picks_panel(), summary_stats()
 │
 ├── eval/
-│   └── evaluate.py         ← AI validation pipeline
+│   └── evaluate.py         ← AI validation + review pipeline
 │                               call_openai(), call_openai_grounded(),
-│                               VALIDATION_PROMPT, GROUNDING_PROMPT
+│                               call_review_agent(),
+│                               VALIDATION_PROMPT, GROUNDING_PROMPT,
+│                               REVIEW_AGENT_PROMPT
 │
 ├── config/
 │   └── sectors.py          ← Sector → ticker mappings + display names
@@ -355,17 +363,58 @@ python eval/evaluate.py --sector tech --mode opinion --save  # saves JSON to dis
 
 ---
 
+## Review with AI
+
+After running AI Validation, click **🔬 Review with AI** to launch a research agent that performs a final due-diligence pass on the strongest picks.
+
+### How candidates are selected
+
+The agent only reviews stocks that meet **all three** of the following criteria:
+
+1. `analyst_rating` is `"Strong Buy"` or `"Contrarian Strong Buy"`
+2. AI Validation `agreement` is `"agree"` — the algo's gate logic was confirmed correct
+3. AI Validation `confidence` is `"high"` — no numeric ambiguity or partial data
+
+Up to 3 candidates are selected (sorted by composite score, highest first).
+
+### What the agent does
+
+For each candidate the agent:
+
+1. **Searches for recent news** (past 2–4 weeks) — earnings results, guidance updates, management commentary, analyst upgrades/downgrades, sector headwinds or tailwinds
+2. **Identifies 2–3 key catalysts** that could drive the price higher in the near term
+3. **Identifies 2–3 key risks** — competitive threats, macro headwinds, or negative developments the quantitative model cannot capture
+4. **Delivers a verdict** (see below) with a written reasoning paragraph citing specific news or data points
+
+On Azure OpenAI, the agent uses **Bing Search grounding** if `BING_SEARCH_KEY` is set in the environment, enabling live web retrieval. On direct OpenAI, `gpt-4o-mini-search-preview` (which has built-in web search) is used automatically.
+
+### Verdicts
+
+| Verdict | Meaning | UI colour |
+|---|---|---|
+| ✅ **Confirm Buy** | Recent news is consistent with the bullish algo case | Green |
+| ⚠️ **Proceed with Caution** | The algo case holds but notable near-term risks exist | Amber |
+| ❌ **Avoid for Now** | Recent news materially contradicts the bullish rating | Red |
+
+The verdict card shows: news summary · key catalysts · key risks · reasoning.
+
+> **Note:** The Review with AI agent is an informational tool, not a trading signal. It relies on news available at the time of the run and can miss important context. Always conduct independent research before any investment decision.
+
+---
+
 ## Download Report
 
-After a scan (with or without validation), click **⬇️ Download Report** — available in both the sidebar and the bottom of the page.
+After a scan (with or without validation and review), click **⬇️ Download Report** — available in both the sidebar and the bottom of the page.
 
-The report is a `.md` file named `{sector}_analysis_{YYYYMMDD_HHMM}.md` containing:
+The report is a `.md` file named `{sector}_analysis_{YYYYMMDD_HHMM}.md`. The download button caption tells you exactly what is included:
 
-- Sector name and timestamp
-- Summary (stock count, avg composite, avg upside, rating distribution)
-- Full results as a markdown table (all metrics)
-- AI Validation table and overall assessment — **if validation was run**; otherwise a placeholder note
-- Disclaimer
+| What was run | Report contents |
+|---|---|
+| Sector scan only | Summary + full results table |
+| Scan + AI Validation | + Validation table + overall assessment |
+| Scan + Validation + Review with AI | + Per-stock review cards (verdict, catalysts, risks, reasoning) |
+
+Placeholder notes are inserted for any stage that was not run, so the report structure is always consistent.
 
 ---
 
