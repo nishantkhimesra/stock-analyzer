@@ -493,26 +493,29 @@ if failed:
 
 # ── AI Validation ─────────────────────────────────────────────────────────────
 st.divider()
-v_left, v_right = st.columns([4, 1])
-with v_left:
-    st.subheader("🤖 AI Validation")
-    if EVAL_AVAILABLE:
-        provider = "Azure OpenAI" if is_azure() else "OpenAI"
-        st.caption(
-            f"Uses **{provider}** to review whether each algo rating is defensible. "
-            "Runs independently of the sector scan — click once after analysis."
+_val_header = st.empty()
+with _val_header.container():
+    v_left, v_right = st.columns([4, 1])
+    with v_left:
+        st.subheader("🤖 AI Validation")
+        if EVAL_AVAILABLE:
+            provider = "Azure OpenAI" if is_azure() else "OpenAI"
+            st.caption(
+                f"Uses **{provider}** to review whether each algo rating is defensible. "
+                "Runs independently of the sector scan — click once after analysis."
+            )
+        else:
+            st.caption("⚠️ Eval module unavailable — check OPENAI_API_KEY / Azure credentials in .env")
+    with v_right:
+        val_btn = st.button(
+            "▶ Run Validation",
+            type="primary",
+            use_container_width=True,
+            disabled=not EVAL_AVAILABLE,
         )
-    else:
-        st.caption("⚠️ Eval module unavailable — check OPENAI_API_KEY / Azure credentials in .env")
-with v_right:
-    val_btn = st.button(
-        "▶ Run Validation",
-        type="primary",
-        use_container_width=True,
-        disabled=not EVAL_AVAILABLE,
-    )
 
 if val_btn and EVAL_AVAILABLE:
+    _val_header.empty()  # remove header+button before spinner to avoid duplicate
     with st.spinner("Calling AI validator — this takes ~15-30 s…"):
         try:
             _val = call_openai(results, sector_key, opinion_model(DEFAULT_MODEL))
@@ -520,7 +523,7 @@ if val_btn and EVAL_AVAILABLE:
             st.session_state["validation_sector"] = sector_key
         except Exception as _e:
             st.session_state["validation_error"] = str(_e)
-    st.rerun()  # Force clean render — prevents ghost duplicate of this section
+    st.rerun()
 
 if "validation_error" in st.session_state:
     st.error(f"Validation failed: {st.session_state.pop('validation_error')}")
