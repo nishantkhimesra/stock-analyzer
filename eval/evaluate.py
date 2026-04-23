@@ -291,7 +291,8 @@ Critical errors to avoid:
 - piotroski of exactly 5 PASSES >= 5. Never write "5 is below the required 5".
 - Buy gate [4] is cs >= 35 AND up >= 5.0. Piotroski is NOT checked at gate [4].
   p=5, p=6, p=7 do NOT block Buy. Only gate [3] uses Piotroski (p <= 4 → Hold).
-  Correct: "cs=52 >= 35 AND up=21.1 >= 5.0 → Buy [4]."  Wrong: "cs >= 20 → Buy."
+  Correct: "cs=52 >= 35 AND up=21.1 >= 5.0 → Buy [4]."
+  Wrong:   "cs >= 20 → Buy" — cs≥20 is the Hold [5] lower boundary, not the Buy gate.
   Wrong:   "p=5 is low, suggesting Hold" — p=5 does NOT trigger Hold or block Buy.
 - p <= 4 triggers Hold [3] regardless of upside. That is correct, not a bug.
 - "Contrarian Strong Buy" is a valid rating — agree with it when Path A/B/C fires.
@@ -310,6 +311,18 @@ PATH ATTRIBUTION WORKED EXAMPLE — read before citing any path:
   → Writing "Path A fires: cs=61.4 >= 65" is arithmetically false. Never do this.
   Rule: cite the path that ACTUALLY fires. A stock passing Path B does NOT also pass Path A.
 
+BUY GATE CONFUSION PREVENTION:
+  Gate [4] Buy:          cs >= 35  AND  up >= 5.0   ← threshold is THIRTY-FIVE
+  Gate [2] Path B SB:    cs >= 56  AND  up >= 30.0  AND  p >= 5   ← threshold is FIFTY-SIX
+  These are DIFFERENT gates with DIFFERENT thresholds. cs≥56 is Path B ONLY.
+  A stock with cs=46 FAILS Path B (46 < 56) but PASSES Buy gate (46 >= 35).
+  NEVER write "Buy [4] fails: cs < 56" — that threshold does not exist in gate [4].
+  NEVER write "cs < 56 → Hold" — the Buy gate is 35, not 56.
+  Examples:
+    cs=46.8, up=38.2 → Buy [4] fires (46.8 >= 35 ✓, 38.2 >= 5.0 ✓). NOT Hold.
+    cs=45.8, up=37.5 → Buy [4] fires (45.8 >= 35 ✓, 37.5 >= 5.0 ✓). NOT Hold.
+    cs=45.2, up=18.6 → Buy [4] fires (45.2 >= 35 ✓, 18.6 >= 5.0 ✓). NOT Hold.
+
 HOLD GATE [3] CITATION RULE:
   Gate [3] fires when cs < 43 OR p <= 4 — cite whichever condition triggered it.
   NEVER write "Hold [3]: p=5 <= 4", "Hold [3]: p=6 <= 4", or "Hold [3]: p=7 <= 4".
@@ -318,6 +331,20 @@ HOLD GATE [3] CITATION RULE:
   Correct (cs < 43): "Hold [3]: cs=42 < 43."
   Correct (p ≤ 4):   "Hold [3]: p=4 <= 4."
   Wrong:             "Hold [3]: p=5 <= 4" — math error.
+
+CONSISTENCY CHECK — mandatory before writing `agreement`:
+  Read your own notes. Then verify:
+  1. If your notes show Path A/B/C conditions ALL passing → `agreement` MUST be "agree".
+     NEVER output "disagree" when your own notes list every condition as satisfied.
+  2. If your notes say "Path B fires" → `rating_suggested` MUST be "Strong Buy" (or
+     "Contrarian Strong Buy" if the Contrarian label applies). NOT Hold. NOT Buy.
+  3. If your notes say "Buy [4] fires: cs=X >= 35 AND up=Y >= 5.0" → `rating_suggested`
+     MUST be "Buy" and `agreement` MUST match the given rating if it was "Buy".
+  4. If notes show a path firing but `agreement` would be "disagree" — stop and
+     re-read. One of them is wrong. Fix the agreement label, not the notes.
+  Contradictory example to NEVER produce:
+    notes: "Path B fires: cs=61.4≥56, up=53.7≥30, p=5≥5 → Strong Buy"
+    agreement: "disagree"   ← WRONG. Notes confirm the path fires. Must be "agree".
 
 If the walk outcome matches rating_given → agree (use the EXACT rating_given label).
 If it differs → disagree, cite the step and show the values:
