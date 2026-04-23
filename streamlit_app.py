@@ -1,6 +1,7 @@
 import sys
 import os
 import datetime
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import streamlit as st
 import pandas as pd
 
@@ -8,15 +9,17 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from config.sectors import SECTOR_TICKERS, SECTOR_DISPLAY
 from config.dynamic_fetch import fetch_sector_tickers
-from src.scorer import analyse_ticker
+from src.scorer import analyse_ticker, StockScore
 
+_EVAL_IMPORT_ERROR = ""
 try:
     from eval.evaluate import (
         call_openai, call_review_agent, is_azure, opinion_model, DEFAULT_MODEL
     )
     EVAL_AVAILABLE = True
-except Exception:
+except ImportError as _ie:
     EVAL_AVAILABLE = False
+    _EVAL_IMPORT_ERROR = str(_ie)
 
 # ── Sync Streamlit Cloud secrets → os.environ ─────────────────────────────────
 # Streamlit Cloud injects secrets via st.secrets, not os.environ.
@@ -57,7 +60,7 @@ st.divider()
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 def rating_label(rating: str) -> str:
-    rl = rating.lower()
+    rl = (rating or "").lower()
     if "contrarian" in rl:
         return "⬆ Strong Buy ⚡"
     if "strong buy" in rl:
@@ -250,8 +253,12 @@ with st.sidebar:
         ),
     )
 
+    @st.cache_data(ttl=300, show_spinner=False)
+    def _get_live_tickers(sk: str):
+        return fetch_sector_tickers(sk)
+
     if live_mode:
-        _tickers, _source = fetch_sector_tickers(sector_key)
+        _tickers, _source = _get_live_tickers(sector_key)
     else:
         _tickers, _source = SECTOR_TICKERS[sector_key], "curated"
     tickers = _tickers
@@ -326,11 +333,21 @@ if run_btn or st.session_state.get("scan_sector") != sector_key:
     progress_bar = st.progress(0, text="Starting…")
     status_placeholder = st.empty()
 
-    _res = []
-    for i, ticker in enumerate(tickers):
-        status_placeholder.caption(f"Fetching **{ticker}** ({i + 1}/{len(tickers)})…")
-        progress_bar.progress((i + 1) / len(tickers), text=f"{ticker} ({i + 1}/{len(tickers)})")
-        _res.append(analyse_ticker(ticker))
+    _res = [None] * len(tickers)
+    _lock_done = [0]  # mutable counter for thread-safe progress tracking
+    with ThreadPoolExecutor(max_workers=3) as _pool:
+        _futures = {_pool.submit(analyse_ticker, t): i for i, t in enumerate(tickers)}
+        for _fut in as_completed(_futures):
+            _idx = _futures[_fut]
+            try:
+                _res[_idx] = _fut.result()
+            except Exception:
+                _res[_idx] = StockScore(ticker=tickers[_idx], data_quality="failed")
+            _lock_done[0] += 1
+            _done = _lock_done[0]
+            progress_bar.progress(_done / len(tickers), text=f"{tickers[_idx]} ({_done}/{len(tickers)})")
+            status_placeholder.caption(f"Fetching **{tickers[_idx]}** ({_done}/{len(tickers)})…")
+    _res = [r for r in _res if r is not None]
 
     progress_bar.empty()
     status_placeholder.empty()
@@ -507,7 +524,8 @@ with _val_header.container():
                 "Runs independently of the sector scan — click once after analysis."
             )
         else:
-            st.caption("⚠️ Eval module unavailable — check OPENAI_API_KEY / Azure credentials in .env")
+            _err_detail = f": {_EVAL_IMPORT_ERROR}" if _EVAL_IMPORT_ERROR else ""
+            st.caption(f"⚠️ Eval module unavailable{_err_detail}")
     with v_right:
         val_btn = st.button(
             "▶ Run Validation",
@@ -659,6 +677,7 @@ if (
                 "roe":             f"{r.roe*100:.1f}%"
                                    if r.roe else None,
                 "rsi_14":          round(r.rsi_14, 0) if r.rsi_14 else None,
+                "fcf_yield":        round(r.fcf_yield, 2) if r.fcf_yield else None,
                 "yahoo_consensus":           r.yahoo_consensus or "N/A",
                 "ai_validation_agreement":   stock_vals.get(
                     r.ticker, {}).get("agreement", ""),

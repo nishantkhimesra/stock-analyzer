@@ -20,6 +20,7 @@ Usage:
 
 import sys
 import os
+import re
 import json
 import argparse
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -520,8 +521,18 @@ def serialise_result(r: StockScore) -> dict:
         "rsi_14":           round(r.rsi_14, 0)               if r.rsi_14               else None,
         "analyst_upside":   f"{r.upside_to_target:.1f}%"     if r.upside_to_target     else None,
         "analyst_pt":       round(r.analyst_target, 2)       if r.analyst_target       else None,
+        "fcf_yield":        round(r.fcf_yield, 2)           if r.fcf_yield         else None,
         "data_quality":     r.data_quality,
     }
+
+
+def extract_json(raw: str) -> str:
+    """Strip markdown code fences and return a clean JSON string."""
+    raw = raw.strip()
+    match = re.search(r"```(?:json)?\s*([\s\S]*?)```", raw)
+    if match:
+        return match.group(1).strip()
+    return raw
 
 
 def run_analysis(sector_key: str, live: bool = False) -> list[StockScore]:
@@ -541,7 +552,12 @@ def run_analysis(sector_key: str, live: bool = False) -> list[StockScore]:
         done = 0
         for future in as_completed(futures):
             done += 1
-            r = future.result()
+            ticker = futures[future]
+            try:
+                r = future.result()
+            except Exception as e:
+                console.print(f"\n[red]✗ {ticker} failed: {e}[/red]")
+                continue
             results.append(r)
             status = "[green]✓[/green]" if r.data_quality != "failed" else "[red]✗[/red]"
             console.print(f"  {status} {r.ticker} ({done}/{len(tickers)})", end="\r")
@@ -576,13 +592,7 @@ def call_openai(results: list[StockScore], sector_key: str, model: str) -> dict:
         ],
     )
 
-    raw = response.choices[0].message.content.strip()
-    if raw.startswith("```"):
-        raw = raw.split("```")[1]
-        if raw.startswith("json"):
-            raw = raw[4:]
-
-    return json.loads(raw)
+    return json.loads(extract_json(response.choices[0].message.content))
 
 
 def call_openai_grounded(results: list[StockScore], top_n: int = 8) -> dict:
@@ -667,13 +677,7 @@ def call_openai_grounded(results: list[StockScore], top_n: int = 8) -> dict:
                 sys.exit(1)
             raise
 
-    raw = response.choices[0].message.content.strip()
-    if raw.startswith("```"):
-        raw = raw.split("```")[1]
-        if raw.startswith("json"):
-            raw = raw[4:]
-
-    return json.loads(raw)
+    return json.loads(extract_json(response.choices[0].message.content))
 
 
 def call_review_agent(candidates: list[dict]) -> dict:
@@ -729,6 +733,7 @@ def call_review_agent(candidates: list[dict]) -> dict:
             response = client.chat.completions.create(
                 model=GROUNDED_MODEL,
                 max_tokens=4096,
+                response_format={"type": "json_object"},  # search-preview supports this
                 messages=[{"role": "user", "content": prompt}],
             )
         except Exception as exc:
@@ -740,13 +745,71 @@ def call_review_agent(candidates: list[dict]) -> dict:
                 sys.exit(1)
             raise
 
-    raw = response.choices[0].message.content.strip()
-    if raw.startswith("```"):
-        raw = raw.split("```")[1]
-        if raw.startswith("json"):
-            raw = raw[4:]
+    raw = extract_json(response.choices[0].message.content)
+    try:
+        return json.loads(raw)
+    except json.JSONDecodeError as e:
+        console.print(f"[red]Review agent returned non-JSON output: {e}[/red]")
+        console.print(f"[dim]Raw response (first 500 chars):[/dim] {raw[:500]}")
+        raise
 
-    return json.loads(raw)
+
+def build_review_candidates(results: list[StockScore], validation: dict) -> list[dict]:
+    """Build enriched candidate payload for the review agent.
+
+    Only includes Strong Buy stocks where AI validation agreed with high confidence.
+    Capped at 3 to control token usage and cost.
+    """
+    val_map = {v["ticker"]: v for v in validation.get("stock_validations", [])}
+    candidates = []
+    for r in results:
+        if "Strong Buy" not in r.analyst_rating:
+            continue
+        v = val_map.get(r.ticker, {})
+        if v.get("agreement") != "agree" or v.get("confidence") != "high":
+            continue
+        c = serialise_result(r)
+        c["algo_rating"]              = r.analyst_rating
+        c["ai_validation_agreement"]  = v.get("agreement", "")
+        c["ai_validation_confidence"] = v.get("confidence", "")
+        c["ai_validation_concerns"]   = v.get("concerns", [])
+        c["ai_validation_notes"]      = v.get("notes", "")
+        candidates.append(c)
+    return candidates[:3]
+
+
+def render_review_report(review: dict, sector_key: str):
+    """Render the Review with AI results in the CLI."""
+    sector_name = SECTOR_DISPLAY[sector_key]
+    console.print()
+    console.print(Rule(
+        f"[bold white] Review with AI — {sector_name} [/bold white]",
+        style="bright_green",
+    ))
+    verdict_colour = {
+        "Confirm Buy":          "green",
+        "Proceed with Caution": "yellow",
+        "Avoid for Now":        "red",
+    }
+    for rev in review.get("reviews", []):
+        colour  = verdict_colour.get(rev.get("verdict", ""), "white")
+        ticker  = rev.get("ticker", "?")
+        verdict = rev.get("verdict", "—")
+        conf    = rev.get("confidence", "—").upper()
+        console.print(f"\n[bold {colour}]{ticker}[/bold {colour}] — {verdict} [{conf}]")
+        if rev.get("quant_baseline"):
+            console.print(f"  [dim]Quant:[/dim]       {rev['quant_baseline']}")
+        if rev.get("safe_to_buy"):
+            console.print(f"  [dim]Safe to buy:[/dim] {rev['safe_to_buy']}")
+        if rev.get("news_summary"):
+            console.print(f"  [dim]News:[/dim]        {rev['news_summary']}")
+        if rev.get("key_risks"):
+            console.print(f"  [dim]Risks:[/dim]       " + " · ".join(rev["key_risks"]))
+        if rev.get("reasoning"):
+            console.print(f"  [dim]Reasoning:[/dim]   {rev['reasoning']}")
+    summary = review.get("agent_summary", "")
+    if summary:
+        console.print(Panel(summary, title="Agent Summary", border_style="dim green"))
 
 
 def render_grounding_report(grounding: dict, sector_key: str):
@@ -874,6 +937,11 @@ def main():
                         help="Number of top stocks to fact-check in grounded mode (default: 8)")
     parser.add_argument("--save",   metavar="FILE",
                         help="Save raw JSON output(s) to a file")
+    parser.add_argument(
+        "--review",
+        action="store_true",
+        help="Run Review with AI on validated Strong Buy candidates after opinion mode",
+    )
     args = parser.parse_args()
 
     results = run_analysis(args.sector)
@@ -892,15 +960,31 @@ def main():
             tickers = ", ".join(v["ticker"] for v in disagreements)
             console.print(f"[yellow]⚠  OpenAI disagrees on: {tickers}[/yellow]")
 
+        if args.review:
+            candidates = build_review_candidates(results, validation)
+            if candidates:
+                console.print(
+                    f"\n[dim]Running review agent on "
+                    f"{len(candidates)} Strong Buy candidate(s)…[/dim]"
+                )
+                review = call_review_agent(candidates)
+                output["review"] = review
+                render_review_report(review, args.sector)
+            else:
+                console.print("[dim]No validated Strong Buy candidates qualify for review.[/dim]")
+
     if args.mode in ("grounded", "both"):
         grounding = call_openai_grounded(results, top_n=args.grounded_top)
         output["grounded"] = grounding
         render_grounding_report(grounding, args.sector)
 
     if args.save:
-        with open(args.save, "w") as f:
-            json.dump(output, f, indent=2)
-        console.print(f"[dim]Output saved to {args.save}[/dim]")
+        try:
+            with open(args.save, "w") as f:
+                json.dump(output, f, indent=2)
+            console.print(f"[dim]Output saved to {args.save}[/dim]")
+        except OSError as e:
+            console.print(f"[red]Failed to save output to {args.save}: {e}[/red]")
 
     # Exit non-zero if any data accuracy issues were found
     if "grounded" in output:
