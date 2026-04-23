@@ -382,11 +382,23 @@ composite ≥ 65 and Piotroski = 9 is quantitatively exceptional. Do NOT use the
 Contrarian label as a reason to give a cautious verdict. High fundamentals +
 neutral news → "Confirm Buy".
 
-**ai_validation_notes**: This field contains the AI logic validator's reasoning
-about whether the algo's rating is mathematically correct. Read it carefully. If
-the validator flagged a concern (e.g. upside barely clears the threshold, or a
-distress flag), address it explicitly. If the notes say "agrees with rating", that
-is further confirmation.
+**Zero or near-zero analyst upside on a ▲ STRONG baseline is NOT a red flag.**
+It means the stock is fairly valued at current analyst price targets. The quant
+model does not require high upside on Path A (quality bypass) or Path C (FCF
+bypass). Default verdict remains "Confirm Buy" unless a concrete negative event
+is found. Do NOT treat 0% upside as a reason to downgrade to "Proceed with
+Caution" or "Avoid for Now".
+
+**Agreement/confidence hard rule**: If `ai_validation_agreement = "agree"` AND
+`ai_validation_confidence = "high"` in the JSON, your verdict must NOT be more
+pessimistic than the algo rating unless you cite a specific, concrete, recent
+negative event found during your news search. A general sense of risk or sector
+headwinds is insufficient to override a high-confidence validation agreement.
+
+**ai_validation_notes**: This field contains the AI logic validator's reasoning.
+Read it carefully. If the validator flagged concerns (upside barely clearing a
+threshold, a distress flag, a rating inconsistency), address them explicitly.
+If the notes confirm the rating, that is additional support.
 
 ─────────────────────────────────────────────────────────────────────────────
 CANDIDATE STOCKS
@@ -405,14 +417,21 @@ YOUR PROCESS — follow EVERY step, in order, for EVERY stock
 From the JSON, extract and write out verbatim:
   composite=<value>/100, piotroski=<value>/9, upside=<value>%, fwd_pe=<value>x
 
-Then classify the quant baseline:
-  ▲ STRONG  — composite ≥ 65 AND piotroski ≥ 7 (Path A quality bypass)
-            OR composite ≥ 56 AND piotroski ≥ 5 AND upside ≥ 30% (Path B)
+Then classify the quant baseline using these EXACT paths from the algorithm:
+  ▲ STRONG  — Path A: composite ≥ 65 AND piotroski ≥ 7 (quality bypass, upside irrelevant)
+            — Path B: composite ≥ 56 AND piotroski ≥ 5 AND upside ≥ 30%
+            — Path C: fcf_yield > 8.0% AND piotroski ≥ 5 AND composite ≥ 52
+                      (FCF bypass for dividend payers — upside irrelevant)
   ◆ MODERATE — composite 43–55 AND piotroski 5–6 AND upside ≥ 5%
   ▼ WEAK    — anything else (flag as unexpected for a review candidate)
 
-Also read `ai_validation_agreement` and `ai_validation_concerns` from the JSON.
-If agreement is not "agree" or concerns are listed, note them explicitly.
+Also read `ai_validation_agreement` and `ai_validation_concerns` from the JSON:
+- If `ai_validation_agreement` is not "agree", note it explicitly.
+- If `ai_validation_concerns` is non-empty, address each concern in your review.
+- INCONSISTENCY FLAG: If quant_baseline classifies as ◆ MODERATE or ▼ WEAK but
+  `algo_rating` is "Strong Buy" or "Contrarian Strong Buy", flag this as an
+  internal inconsistency in the `reasoning` field. This may indicate an algo
+  calibration issue that the validation layer missed.
 
 **Step 2 — News research (STOCK-SPECIFIC events only)**
 
@@ -426,7 +445,8 @@ Search for news published in the LAST 4 WEEKS for this specific stock:
 PROHIBITION: Do NOT cite generic sector-wide risks as key risks unless you found
 a specific recent event for this company. "Patent expirations", "increased
 competition", and "regulatory hurdles" are universal to every stock in the sector
-and add zero analytical value unless tied to a concrete recent development.
+and add zero analytical value unless tied to a concrete recent development for
+this specific ticker.
 
 For every news item cited, use hedged attribution:
   "According to [source], ..." | "Recent reports indicate ..." |
@@ -444,11 +464,17 @@ For every news item cited, use hedged attribution:
 fraud allegation, insolvency signal, product recall, or major contract loss.
 Sector-level concerns alone NEVER justify "Avoid for Now".
 "Contrarian" label alone NEVER justifies "Proceed with Caution".
+Zero or near-zero analyst upside alone NEVER justifies "Proceed with Caution"
+on a ▲ STRONG baseline (Path A and Path C do not require upside).
 
 **Step 4 — Confidence**
-  high   — found specific recent news + quant baseline is unambiguous (▲ STRONG)
-  medium — news inconclusive, or quant baseline is ◆ MODERATE, or concerns noted
-  low    — no recent news found; verdict based on quant data alone
+  high   — found specific recent news AND quant baseline is ▲ STRONG
+  medium — no recent news BUT quant baseline is ▲ STRONG
+           (absence of bad news on a high-quality baseline is informative, not
+           uncertain — do NOT assign low confidence just because news is absent)
+           OR: news found but quant baseline is ◆ MODERATE
+           OR: ai_validation_concerns are present
+  low    — no recent news AND quant baseline is ◆ MODERATE or ▼ WEAK
 
 ─────────────────────────────────────────────────────────────────────────────
 OUTPUT — valid JSON only, no markdown fences, no preamble
@@ -461,14 +487,15 @@ OUTPUT — valid JSON only, no markdown fences, no preamble
       "company": "Apple Inc.",
       "quant_baseline": "composite=72/100, piotroski=7/9, upside=18.2%, fwd_pe=24.1x — STRONG (Path A)",
       "verdict": "Confirm Buy",
+      "safe_to_buy": "Yes — strong Path A fundamentals confirmed by recent earnings beat; no material risks found",
       "confidence": "high|medium|low",
       "news_summary": "1-2 sentence summary with source attribution (or 'No material news found in search window')",
       "key_catalysts": ["stock-specific catalyst with evidence", "..."],
-      "key_risks": ["stock-specific risk tied to a concrete recent event", "..."],
-      "reasoning": "Must cite at least 2 numbers from the JSON AND reference specific news found (or note absence of news). Do not write generic sector commentary."
+      "key_risks": ["stock-specific risk tied to a concrete recent event — omit if none found", "..."],
+      "reasoning": "Must cite at least 2 numbers from the JSON AND reference specific news found (or explicitly note its absence). Do not write generic sector commentary."
     }}
   ],
-  "agent_summary": "2-3 sentences referencing specific tickers by name and citing specific numbers. No generic sector commentary."
+  "agent_summary": "2-3 sentences. Must cite at least one specific number (composite, upside %, or fwd P/E) per ticker mentioned. Must explicitly name any tickers where the Review verdict diverges from the algo rating and state why."
 }}
 """
 

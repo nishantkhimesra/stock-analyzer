@@ -207,6 +207,8 @@ def generate_report(
             ]
             if rev.get("quant_baseline"):
                 lines += [f"**📊 Quant Baseline:** `{rev['quant_baseline']}`", ""]
+            if rev.get("safe_to_buy"):
+                lines += [f"**💡 Safe to buy?** {rev['safe_to_buy']}", ""]
             if rev.get("news_summary"):
                 lines += [f"**📰 Recent News:** {rev['news_summary']}", ""]
             if rev.get("key_catalysts"):
@@ -716,6 +718,10 @@ if (
                     f"</span></div>",
                     unsafe_allow_html=True,
                 )
+                if rev.get("safe_to_buy"):
+                    st.markdown(
+                        f"**💡 Safe to buy?** {rev['safe_to_buy']}"
+                    )
                 if rev.get("quant_baseline"):
                     st.markdown(
                         f"**📊 Quant Baseline:** `{rev['quant_baseline']}`"
