@@ -253,6 +253,29 @@ For every numeric gate check, write out the comparison explicitly:
 NEVER assert a comparison fails without showing the numbers. If you write
 "X < Y" you must first confirm X is the actual JSON value for that ticker.
 
+BUY GATE [4] ARITHMETIC — verify BOTH conditions before flagging a disagreement:
+  Gate [4]: cs >= 35  AND  up >= 5.0  (threshold is FIVE PERCENT, not 30%).
+  The 30% threshold belongs exclusively to Path B (Strong Buy) — it does NOT apply here.
+
+  Upside values that PASS the >= 5.0 test (do NOT write these as failures):
+    8.6%  PASSES — 8.6 > 5.0
+    10.8% PASSES — 10.8 > 5.0
+    19.7% PASSES — 19.7 > 5.0
+    28.8% PASSES — 28.8 > 5.0
+    29.6% PASSES — 29.6 > 5.0
+    37.3% PASSES — 37.3 > 5.0
+    39.1% PASSES — 39.1 > 5.0
+    42.5% PASSES — 42.5 > 5.0
+
+  NEVER write "up=8.6 < 5.0" — that is arithmetically false.
+  NEVER write "up=29.6 < 5.0" — 29.6 is NOT less than 5.0.
+  If cs >= 35 AND up >= 5.0, the stock is Buy [4]. Output "Buy". Do not check [5].
+
+  Hold [5] fires ONLY when Buy [4] has already failed (up < 5.0 or cs < 35).
+  NEVER cite "cs >= 20 → Hold" without first showing Buy [4] failed.
+    Correct: "Buy [4] fails: up=2.1 < 5.0. Hold [5] fires: cs=56 >= 20."
+    Wrong:   "cs=56 >= 20 → Hold" — Buy [4] was not checked (cs=56 >= 35, check upside first).
+
 **Step 3 — Walk the decision tree (do NOT check gates independently)**
 
 For each stock, read cs, p, up, and fcf from the JSON. First check if Path A
@@ -673,8 +696,9 @@ def call_openai_grounded(results: list[StockScore], top_n: int = 8) -> dict:
             }
         else:
             console.print(
-                f"\n[yellow]⚠ BING_SEARCH_KEY not set — Azure grounded mode will use "
-                f"model knowledge only (no live web search).[/yellow]\n"
+                f"\n[yellow]⚠  BING_SEARCH_KEY not set — Azure grounded mode will use "
+                f"model knowledge only (no live web search). Set BING_SEARCH_KEY in .env "
+                f"to enable live fact-checking.[/yellow]\n"
                 f"[dim]Calling Azure ({model}) to fact-check top {len(valid)} stocks…[/dim]"
             )
         response = client.chat.completions.create(
@@ -744,7 +768,10 @@ def call_review_agent(candidates: list[dict]) -> dict:
             }
         else:
             console.print(
-                f"\n[dim]Calling Azure ({model}, no Bing key) for review agent…[/dim]"
+                f"\n[yellow]⚠  BING_SEARCH_KEY not set — review agent will use model knowledge "
+                f"only (no live web search). Recent news will NOT be available.\n"
+                f"   Set BING_SEARCH_KEY in .env to enable real news research.[/yellow]\n"
+                f"[dim]Calling Azure ({model}, no web search) for review agent…[/dim]"
             )
         response = client.chat.completions.create(
             model=model,
@@ -754,7 +781,8 @@ def call_review_agent(candidates: list[dict]) -> dict:
         )
     else:
         console.print(
-            f"\n[dim]Calling OpenAI ({GROUNDED_MODEL}) for review agent…[/dim]"
+            f"\n[dim]Calling OpenAI ({GROUNDED_MODEL}) for review agent "
+            f"(web search built-in)\u2026[/dim]"
         )
         try:
             response = client.chat.completions.create(
@@ -764,10 +792,12 @@ def call_review_agent(candidates: list[dict]) -> dict:
                 messages=[{"role": "user", "content": prompt}],
             )
         except Exception as exc:
-            if "model_not_found" in str(exc):
+            if "model_not_found" in str(exc) or "404" in str(exc):
                 console.print(
-                    f"[red]Error:[/red] Model '{GROUNDED_MODEL}' not found. "
-                    "Verify at: https://platform.openai.com/account/rate-limits"
+                    f"[red]Error:[/red] Model '{GROUNDED_MODEL}' not found on your OpenAI plan.\n"
+                    "  \u2022 This model requires Tier 1+ access.\n"
+                    "  \u2022 Check availability: https://platform.openai.com/account/rate-limits\n"
+                    "  [yellow]Without this model there is NO web search \u2014 news results will be empty.[/yellow]"
                 )
                 sys.exit(1)
             raise
