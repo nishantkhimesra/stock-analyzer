@@ -277,9 +277,26 @@ explain WHY [4] didn’t fire: state the Buy gate check and show it failed.
   Correct: "Buy [4] fails: up=−4.3 < 5.0 (negative upside). Hold [5] fires."
   Wrong:   "cs >= 20 → Hold" with no explanation of why Buy was skipped.
 
+PATH ATTRIBUTION WORKED EXAMPLE — read before citing any path:
+  Stock has cs=61.4, p=7, up=42.5%.
+  Path A check: cs=61.4 >= 65? NO (61.4 < 65). Path A FAILS.
+  Path B check: cs=61.4 >= 56? YES. up=42.5 >= 30? YES. p=7 >= 5? YES. Path B FIRES.
+  → Note MUST say: "Path B fires: cs=61.4 >= 56, up=42.5 >= 30, p=7 >= 5 → Strong Buy."
+  → Writing "Path A fires: cs=61.4 >= 65" is arithmetically false. Never do this.
+  Rule: cite the path that ACTUALLY fires. A stock passing Path B does NOT also pass Path A.
+
+HOLD GATE [3] CITATION RULE:
+  Gate [3] fires when cs < 43 OR p <= 4 — cite whichever condition triggered it.
+  NEVER write "Hold [3]: p=5 <= 4", "Hold [3]: p=6 <= 4", or "Hold [3]: p=7 <= 4".
+  These are arithmetically false. 5, 6, 7 are NOT ≤ 4.
+  A stock with p=5 and cs ≥ 43 CANNOT be on Hold [3]. It lands on Hold [5] or Buy [4].
+  Correct (cs < 43): "Hold [3]: cs=42 < 43."
+  Correct (p ≤ 4):   "Hold [3]: p=4 <= 4."
+  Wrong:             "Hold [3]: p=5 <= 4" — math error.
+
 If the walk outcome matches rating_given → agree (use the EXACT rating_given label).
 If it differs → disagree, cite the step and show the values:
-  e.g. "Path A fires: cs=71 >= 65 AND p=9 >= 7 → Strong Buy. Upside irrelevant."
+  e.g. "Path B fires: cs=61.4 >= 56, up=42.5 >= 30, p=7 >= 5 → Strong Buy."
 
 **Step 4 — Distress flags (independent of rating agreement)**
 - piotroski ≤ 2 on any Buy or Strong Buy → add concern, keep agreement if gates pass.
@@ -415,6 +432,10 @@ YOUR PROCESS — follow EVERY step, in order, for EVERY stock
 
 **Step 1 — Quantitative baseline (MANDATORY, before any news research)**
 
+quant_baseline is REQUIRED for EVERY ticker in the output JSON. Never omit it
+or output null. If classification is unclear, write the raw numbers:
+"composite=<x>/100, piotroski=<y>/9, upside=<z>% — STRONG/MODERATE/WEAK"
+
 From the JSON, extract and write out verbatim:
   composite=<value>/100, piotroski=<value>/9, upside=<value>%, fwd_pe=<value>x
 
@@ -448,6 +469,12 @@ a specific recent event for this company. "Patent expirations", "increased
 competition", and "regulatory hurdles" are universal to every stock in the sector
 and add zero analytical value unless tied to a concrete recent development for
 this specific ticker.
+
+key_catalysts RULE: If your news_summary says "no material news found", output
+key_catalysts as an empty array: []. Do NOT rephrase quant data (composite score,
+revenue growth %, Piotroski) as catalysts. The quant data is already in
+quant_baseline — repeating it as catalysts blurs quantitative and qualitative
+signals. key_catalysts must contain ONLY events found in your news search.
 
 For every news item cited, use hedged attribution:
   "According to [source], ..." | "Recent reports indicate ..." |
