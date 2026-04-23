@@ -205,6 +205,8 @@ def generate_report(
                 f"| **Confidence:** {rev.get('confidence', '—').upper()}",
                 "",
             ]
+            if rev.get("quant_baseline"):
+                lines += [f"**📊 Quant Baseline:** `{rev['quant_baseline']}`", ""]
             if rev.get("news_summary"):
                 lines += [f"**📰 Recent News:** {rev['news_summary']}", ""]
             if rev.get("key_catalysts"):
@@ -652,8 +654,12 @@ if (
                 "roe":             f"{r.roe*100:.1f}%"
                                    if r.roe else None,
                 "rsi_14":          round(r.rsi_14, 0) if r.rsi_14 else None,
-                "yahoo_consensus": r.yahoo_consensus or "N/A",
-                "ai_validation_notes": stock_vals.get(
+                "yahoo_consensus":           r.yahoo_consensus or "N/A",
+                "ai_validation_agreement":   stock_vals.get(
+                    r.ticker, {}).get("agreement", ""),
+                "ai_validation_concerns":    stock_vals.get(
+                    r.ticker, {}).get("concerns", []),
+                "ai_validation_notes":       stock_vals.get(
                     r.ticker, {}).get("notes", ""),
             }
             for r in _review_candidates
@@ -707,6 +713,10 @@ if (
                     f"</span></div>",
                     unsafe_allow_html=True,
                 )
+                if rev.get("quant_baseline"):
+                    st.markdown(
+                        f"**📊 Quant Baseline:** `{rev['quant_baseline']}`"
+                    )
                 if rev.get("news_summary"):
                     st.markdown(
                         f"**📰 Recent News:** {rev['news_summary']}"
