@@ -522,11 +522,27 @@ competition", and "regulatory hurdles" are universal to every stock in the secto
 and add zero analytical value unless tied to a concrete recent development for
 this specific ticker.
 
-key_catalysts RULE: If your news_summary says "no material news found", output
-key_catalysts as an empty array: []. Do NOT rephrase quant data (composite score,
-revenue growth %, Piotroski) as catalysts. The quant data is already in
-quant_baseline — repeating it as catalysts blurs quantitative and qualitative
-signals. key_catalysts must contain ONLY events found in your news search.
+NEWS QUALITY RULES — enforced for every ticker:
+
+1. news_summary must cite a SOURCE and a SPECIFIC EVENT.
+   A number from the JSON (revenue growth %, composite score, Piotroski) is NOT news.
+   Wrong: "Kinross has enhanced operational efficiencies, contributing to 42.9% revenue growth."
+          ↑ 42.9% is from the JSON. No source. No date. No event. This is NOT news.
+   Correct: "According to [source], Kinross reported [specific event] on [approximate date]."
+   If no source or specific event can be cited → write: "No material news found in search window."
+
+2. key_catalysts MUST be an empty array [] when news_summary says no news found.
+   Wrong (AU pattern to avoid):
+     news_summary: "No material news found"
+     key_catalysts: ["Achievement of strategic production milestones",
+                     "Increased analyst price targets"]
+   ↑ These are INVENTED. No news was found. Output key_catalysts: [] instead.
+   Correct:
+     news_summary: "No material news found in search window."
+     key_catalysts: []
+
+3. key_catalysts must contain ONLY events found in your news search — not rephrased
+   quant data. The quant data is already captured in quant_baseline.
 
 For every news item cited, use hedged attribution:
   "According to [source], ..." | "Recent reports indicate ..." |
