@@ -71,9 +71,14 @@ def resolve_sector(raw: str) -> tuple[str, str]:
     if raw in SECTOR_TICKERS:
         return raw, SECTOR_DISPLAY.get(raw, raw.title())
 
-    # Partial match
+    # Prefix match first — prevents "tech" matching "biotech" via substring
     for key in SECTOR_TICKERS:
-        if raw in key or key in raw:
+        if key.startswith(raw) or raw.startswith(key):
+            return key, SECTOR_DISPLAY.get(key, key.title())
+
+    # Substring fallback
+    for key in SECTOR_TICKERS:
+        if raw in key:
             return key, SECTOR_DISPLAY.get(key, key.title())
 
     # Match against display name
@@ -112,6 +117,7 @@ def fetch_all(tickers: list[str]) -> list[StockScore]:
                 try:
                     results[ticker] = future.result()
                 except Exception as e:
+                    console.print(f"[red]✗ {ticker}: {e}[/red]")
                     s = StockScore(ticker=ticker)
                     s.error = str(e)
                     s.data_quality = "failed"
@@ -186,7 +192,7 @@ def run(sector_input: str, extra_tickers: list[str] = None, top: int = DEFAULT_T
     console.print(results_table(ranked))
 
     # ── Top picks deep dive ───────────────────────────────────
-    top_picks_panel(ranked, n=min(top, 5))
+    top_picks_panel(ranked, n=top)
 
     # ── Failed tickers note ───────────────────────────────────
     failed_tickers_note(ranked)

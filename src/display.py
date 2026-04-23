@@ -74,7 +74,7 @@ def fmt(val, fmt_str=".1f", suffix="", prefix="", none_str="N/A"):
 
 def fmt_pct(val, none_str="N/A"):
     if val is None: return f"[dim]{none_str}[/dim]"
-    color = "bright_green" if val >= 10 else "green" if val >= 0 else "red"
+    color = "bold bright_green" if val >= 50 else "bright_green" if val >= 10 else "green" if val >= 0 else "red"
     sign  = "+" if val >= 0 else ""
     return f"[{color}]{sign}{val:.1f}%[/{color}]"
 
@@ -123,7 +123,7 @@ def results_table(results: list, top_n: int = None) -> Table:
 
         rsi_str = "N/A"
         if r.rsi_14:
-            rsi_color = "bright_green" if 40 <= r.rsi_14 <= 60 \
+            rsi_color = "bright_green" if 40 <= r.rsi_14 <= 65 \
                         else "green" if 30 <= r.rsi_14 < 40 \
                         else "yellow" if r.rsi_14 < 30 \
                         else "orange1"
@@ -155,10 +155,10 @@ def top_picks_panel(results: list, n: int = 5):
     console.print()
     console.print(Rule(f"[bold white] Top {n} Picks — Deep Dive [/bold white]", style="green"))
 
-    top = [r for r in results[:n] if r.data_quality != "failed"]
+    ranked_top = [(i + 1, r) for i, r in enumerate(results) if r.data_quality != "failed"][:n]
 
     cards = []
-    for r in top:
+    for rank, r in ranked_top:
         _rl = r.analyst_rating.lower()
         tier = (
             "[bold bright_green]★ STRONG BUY[/bold bright_green] [dim yellow](Contrarian)[/dim yellow]" if "contrarian" in _rl else
@@ -170,7 +170,7 @@ def top_picks_panel(results: list, n: int = 5):
 
         # Piotroski breakdown
         p_bullets = []
-        for k, v in r.piotroski_detail.items():
+        for k, v in (r.piotroski_detail or {}).items():
             if k == "error": continue
             label = k.replace("F", "").replace("_", " ").title()
             icon  = "[bright_green]✓[/bright_green]" if v == 1 else "[dim red]✗[/dim red]"
@@ -218,7 +218,7 @@ def top_picks_panel(results: list, n: int = 5):
 
         cards.append(Panel(
             content,
-            title=f"[bold cyan]#{results.index(r)+1}  {r.ticker}[/bold cyan]",
+            title=f"[bold cyan]#{rank}  {r.ticker}[/bold cyan]",
             border_style="green" if r.composite_score >= 65 else "blue",
             width=40,
             padding=(0, 1),

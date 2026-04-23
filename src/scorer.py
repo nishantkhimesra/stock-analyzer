@@ -176,13 +176,13 @@ def compute_piotroski(ticker_obj: yf.Ticker) -> tuple[int, dict]:
             score += f6
             detail["F6_liquidity_improved"] = f6
 
-        # F7 – No share dilution
+        # F7 – No share dilution (0.5% rounding tolerance; original Piotroski uses 0%)
         shares_curr = get(inc, "Basic Average Shares", 0) or \
                       get(bs, "Ordinary Shares Number", 0)
         shares_prev = get(inc, "Basic Average Shares", 1) or \
                       get(bs, "Ordinary Shares Number", 1)
         if shares_curr and shares_prev:
-            f7 = 1 if shares_curr <= shares_prev * 1.02 else 0
+            f7 = 1 if shares_curr <= shares_prev * 1.005 else 0
             score += f7
             detail["F7_no_dilution"] = f7
 
@@ -351,7 +351,6 @@ def compute_scores(result: StockScore) -> StockScore:
 def analyse_ticker(ticker: str) -> StockScore:
     """Full pipeline for a single ticker."""
     result = StockScore(ticker=ticker.upper())
-    time.sleep(REQUEST_DELAY)
 
     try:
         stock = yf.Ticker(ticker)
@@ -452,14 +451,19 @@ def analyse_ticker(ticker: str) -> StockScore:
                 and result.operating_margin > 0):
             result.piotroski_detail["_context"] = "hyper_growth"
 
-        # Check data quality
-        filled = sum([
-            result.pe_ratio is not None,
-            result.revenue_growth_yoy is not None,
-            result.rsi_14 is not None,
-            result.momentum_6m is not None,
-        ])
-        result.data_quality = "full" if filled >= 3 else "partial"
+        # Flag suspiciously high revenue growth as a potential base-effect artefact
+        # (e.g. acquisition-driven jumps like OXY+CrownRock, or commodity price rallies).
+        # Does not change the score — surfaces it in the validation payload.
+        if result.revenue_growth_yoy and result.revenue_growth_yoy > 1.0:
+            result.piotroski_detail["_rev_growth_flag"] = "possible_base_effect"
+
+        # Check data quality — require actual valuation data, not just price signals.
+        # A stock can have pe_ratio + rsi + momentum (filled=3) but valuation_score=0
+        # because forward_pe, pb, ps, ev_ebitda are all None. That's partial, not full.
+        has_valuation = result.valuation_score > 5
+        has_growth    = result.revenue_growth_yoy is not None
+        has_momentum  = result.rsi_14 is not None and result.momentum_6m is not None
+        result.data_quality = "full" if (has_valuation and has_growth and has_momentum) else "partial"
 
         # Compute composite scores
         result = compute_scores(result)
@@ -516,5 +520,7 @@ def analyse_ticker(ticker: str) -> StockScore:
     except Exception as e:
         result.error = str(e)
         result.data_quality = "failed"
+    finally:
+        time.sleep(REQUEST_DELAY)  # rate-limit after fetch, not before (avoids delay on first ticker)
 
     return result
